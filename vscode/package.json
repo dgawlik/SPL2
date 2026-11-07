@@ -1,0 +1,127 @@
+{
+  "name": "spl2-vscode",
+  "displayName": "SPL2 - Semantic Prompt Language v2",
+  "description": "Syntax highlighting, static linting, and Pylance/Pyright language server integration for Semantic Prompt Language v2 (.spl2)",
+  "version": "2.0.0",
+  "publisher": "spl-lang",
+  "icon": "icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dgawlik/semantic-prompt-language.git",
+    "directory": "vscode"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "main": "./out/extension.cjs",
+  "activationEvents": [
+    "onLanguage:spl2"
+  ],
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "spl2",
+    "python",
+    "llm",
+    "openai",
+    "pydantic",
+    "mcp"
+  ],
+  "contributes": {
+    "configurationDefaults": {
+      "[spl2]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 4,
+        "editor.detectIndentation": false
+      }
+    },
+    "commands": [
+      {
+        "command": "spl2.checkCurrentFile",
+        "title": "SPL2: Check Current File (spl2 --check)"
+      },
+      {
+        "command": "spl2.emitPython",
+        "title": "SPL2: Show Transpiled Python (spl2 --emit-py)"
+      },
+      {
+        "command": "spl2.runFile",
+        "title": "SPL2: Run Current File"
+      }
+    ],
+    "configuration": {
+      "title": "SPL2",
+      "properties": {
+        "spl2.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "scope": "resource",
+          "description": "Python interpreter with the spl2 package installed."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "spl2",
+        "extensions": [
+          ".spl2"
+        ],
+        "aliases": [
+          "SPL2",
+          "Semantic Prompt Language 2",
+          "spl2"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spl2",
+        "scopeName": "source.spl2",
+        "path": "./syntaxes/spl2.tmLanguage.json"
+      },
+      {
+        "scopeName": "spl2.markdown.injection",
+        "path": "./syntaxes/markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.spl2": "spl2"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "spl2",
+        "path": "./snippets/spl2.code-snippets"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run typecheck && npm run build",
+    "test": "npm run typecheck && node build.mjs --test && node --test out/test/language-server.test.cjs",
+    "package": "vsce package --skip-license"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "~1.82.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.0.0"
+  }
+}

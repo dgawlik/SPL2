@@ -1,0 +1,2 @@
+[console_scripts]
+spl2 = spl2.cli:main

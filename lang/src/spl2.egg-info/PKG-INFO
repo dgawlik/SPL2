@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: spl2
+Version: 2.0.0
+Summary: Semantic Prompt Language v2 (SPL2) — a syntactic superset of Python for building reliable LLM and agentic workflows.
+Author: SPL2 Authors
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.60.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: email-validator>=2.0.0
+Requires-Dist: textual>=0.80.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+
+# SPL2 Runtime (`spl2`)
+
+**Semantic Prompt Language v2 (SPL2)** is a syntactic superset of Python for building reliable LLM and agentic workflows.
+
+## Installation
+
+```bash
+pip install -e ./lang
+```
+
+## CLI Usage
+
+```bash
+spl2 script.spl2 [args...]
+spl2 --check script.spl2
+spl2 --emit-py script.spl2
+spl2 --trace script.spl2
+spl2 --realtime script.spl2
+```

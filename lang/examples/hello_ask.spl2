@@ -1,0 +1,3 @@
+result = ask(len='paragraph', fmt='text') 'Funny office story'
+print('Generated story:', result)
+success {'story': result}

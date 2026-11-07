@@ -1,0 +1,128 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SPL2",
+  "scopeName": "source.spl2",
+  "patterns": [
+    { "include": "#spl2-block-restrict" },
+    { "include": "#spl2-block-constraint" },
+    { "include": "#spl2-termination" },
+    { "include": "#spl2-command-with-modifiers" },
+    { "include": "#spl2-command-bare" },
+    { "include": "#python-core" },
+    { "include": "source.python" }
+  ],
+  "repository": {
+    "spl2-block-restrict": {
+      "name": "meta.restrict.spl2",
+      "begin": "^(\\s*)(restrict)\\s*(\\()",
+      "end": "(\\))\\s*(:)",
+      "beginCaptures": {
+        "2": { "name": "keyword.control.restrict.spl2" },
+        "3": { "name": "punctuation.section.modifiers.begin.spl2" }
+      },
+      "endCaptures": {
+        "1": { "name": "punctuation.section.modifiers.end.spl2" },
+        "2": { "name": "punctuation.separator.colon.spl2" }
+      },
+      "patterns": [
+        {
+          "name": "variable.parameter.modifier.restrict.spl2",
+          "match": "\\b(?:fs|net|exec|mcp)\\b(?=\\s*=(?!=))"
+        },
+        { "include": "#python-core" },
+        { "include": "source.python" }
+      ]
+    },
+    "spl2-block-constraint": {
+      "name": "meta.constraint.spl2",
+      "match": "^(\\s*)(enforce|forbid)\\b(?![\\s]*=(?!=))",
+      "captures": {
+        "2": { "name": "keyword.control.constraint.spl2" }
+      }
+    },
+    "spl2-termination": {
+      "name": "meta.termination.spl2",
+      "match": "(?:^|(?<=:\\s)|(?<=;\\s))(\\s*)(success|failure)\\b(?![\\s]*[=.,:\\[])",
+      "captures": {
+        "2": { "name": "keyword.control.termination.spl2" }
+      }
+    },
+    "spl2-command-with-modifiers": {
+      "name": "meta.command.spl2",
+      "begin": "(?<![.\\w])(?:(ask)|(agent)|(decide))\\b\\s*(\\()",
+      "end": "\\)",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.ask.spl2" },
+        "2": { "name": "keyword.other.agent.spl2" },
+        "3": { "name": "keyword.other.decide.spl2" },
+        "4": { "name": "punctuation.section.modifiers.begin.spl2" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.modifiers.end.spl2" }
+      },
+      "patterns": [
+        {
+          "name": "variable.parameter.modifier.spl2",
+          "match": "\\b(?:len|fmt|schema|tokens|retries|thinking|files|model|tools|mcp|max_steps|data)\\b(?=\\s*=(?!=))"
+        },
+        { "include": "#python-core" },
+        { "include": "source.python" }
+      ]
+    },
+    "spl2-command-bare": {
+      "name": "meta.command.bare.spl2",
+      "match": "(?<![.\\w])(ask|agent|decide)\\b(?=\\s+(?:[fFrRbBuU]{0,2}['\"]|[A-Za-z_]))",
+      "captures": {
+        "1": { "name": "keyword.other.llm.spl2" }
+      }
+    },
+    "python-core": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.spl2",
+          "match": "#.*$"
+        },
+        {
+          "name": "string.quoted.triple.spl2",
+          "begin": "([fFrRbBuU]{0,2})('''|\"\"\")",
+          "end": "\\2",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.spl2" },
+            "2": { "name": "punctuation.definition.string.begin.spl2" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.spl2" }
+          }
+        },
+        {
+          "name": "string.quoted.single.spl2",
+          "begin": "([fFrRbBuU]{0,2})('|\")",
+          "end": "(\\2)|$",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.spl2" },
+            "2": { "name": "punctuation.definition.string.begin.spl2" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.string.end.spl2" }
+          }
+        },
+        {
+          "name": "keyword.control.flow.python.spl2",
+          "match": "\\b(?:if|elif|else|for|while|break|continue|return|pass|yield|try|except|finally|raise|with|as|async|await|import|from|def|class|lambda|and|or|not|in|is|assert|del|global|nonlocal|match|case)\\b"
+        },
+        {
+          "name": "constant.language.python.spl2",
+          "match": "\\b(?:True|False|None)\\b"
+        },
+        {
+          "name": "support.function.builtin.spl2",
+          "match": "\\b(?:read_file|write_file|shell|web_fetch|web_search|print|len|str|int|float|bool|list|dict|set|tuple|range|enumerate|zip|isinstance|issubclass)\\b"
+        },
+        {
+          "name": "constant.numeric.spl2",
+          "match": "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
+        }
+      ]
+    }
+  }
+}

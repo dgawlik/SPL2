@@ -1,0 +1,8 @@
+enforce 'Answer in Chinese':
+    forbid 'Mentioning word cat':
+        story = ask 'Funny story about a pet'
+
+if decide(data='Calculation is 3*3') 'The result of calculation is 9':
+    success {'status': 'ok', 'story': story}
+else:
+    failure 'LLM made mistake'

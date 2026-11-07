@@ -1,0 +1,3 @@
+restrict(fs='.', exec='git,pytest'):
+    files = agent(fmt='array', thinking='medium', retries=1) 'List all the files in current repository and pass paths to json array'
+    success {'files': files}

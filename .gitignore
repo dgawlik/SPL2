@@ -1,0 +1,9 @@
+.venv
+**/node_modules
+**/out
+*.pyc
+**/__pycache__
+*.pyo
+**/*.pyc
+**/*.pyo
+**/.pytest_cache

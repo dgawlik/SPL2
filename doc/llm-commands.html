@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="SPL2 provides three specialized LLM execution keywords—ask, agent, and decide—backed by the OpenAI Responses API, Pydantic Structured Outputs, built-in tools, and Model Context Protocol (MCP) servers.">
+<meta name="color-scheme" content="light dark">
+<title>LLM &amp; Agent calls - SPL2 docs</title>
+<link rel="icon" type="image/png" href="assets/icon.png?v=fac756724748">
+<link rel="stylesheet" href="assets/style.css?v=fac756724748">
+<script>try{const theme=localStorage.getItem('spl-theme');if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme}catch(error){console.warn('Could not restore theme preference.',error)}</script>
+<script defer src="assets/search-index.js?v=fac756724748"></script>
+<script defer src="assets/site.js?v=fac756724748"></script>
+</head>
+<body data-page="llm-commands">
+<a class="skip-link" href="#page">Skip to content</a>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html" aria-label="SPL2 documentation home"><span class="brand-mark" aria-hidden="true">s<span>p</span>l2<span class="brand-dot">.</span></span><span class="brand-divider" aria-hidden="true"></span><span class="brand-description">Semantic Prompt Language v2</span></a>
+    <nav class="header-links" aria-label="Primary"><a href="index.html" aria-current="true">Documentation</a><a href="examples.html">Examples</a></nav>
+    <div class="header-actions"><button type="button" class="search-trigger" data-open-search aria-label="Search documentation" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span>Search docs...</span><kbd>Ctrl K</kbd></button><button type="button" class="theme-toggle icon-button" aria-label="Switch color theme" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 13A9 9 0 0 1 11 3.2 9 9 0 1 0 20.8 13Z"/></svg></button><a class="github-link icon-button" href="https://github.com/dgawlik/semantic-prompt-language" aria-label="SPL2 on GitHub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></a></div>
+  </div>
+</header>
+<div class="docs-layout">
+  <aside class="sidebar"><a class="version-label" href="getting-started.html"><span class="status-dot" aria-hidden="true"></span>v2.0.0<span class="version-status">Stable</span></a><nav aria-label="Documentation"><div class="nav-group"><p class="nav-label">Start here</p><ul><li><a href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-3H4z"/><path d="M13 7a3 3 0 0 1 3-3h5v14h-4a4 4 0 0 0-4 3"/></svg><span>Introduction</span></a></li><li><a href="getting-started.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg><span>Getting started</span></a></li></ul></div><div class="nav-group"><p class="nav-label">The language</p><ul><li><a href="language.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg><span>Language</span></a></li><li><a href="llm-commands.html" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg><span>LLM & Agent calls</span><span class="nav-indicator" aria-hidden="true"></span></a></li><li><a href="safety.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span>Policies & sandboxing</span></a></li></ul></div><div class="nav-group"><p class="nav-label">Reference</p><ul><li><a href="cli.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span>CLI & runtime</span></a></li><li><a href="grammar.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H6v6l-3 3 3 3v6h2m8-18h2v6l3 3-3 3v6h-2"/></svg><span>Grammar & lint rules</span></a></li></ul></div><div class="nav-group"><p class="nav-label">Guides</p><ul><li><a href="examples.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zm-9 10 9 5 9-5M3 18l9 5 9-5"/></svg><span>Examples</span></a></li></ul></div></nav><div class="sidebar-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg><p>Python superset.<br><strong>Guaranteed boundaries.</strong></p></div><a class="sidebar-source" href="https://github.com/dgawlik/semantic-prompt-language">Open source on GitHub <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></a></aside>
+  <details class="mobile-nav"><summary>Browse documentation <span>LLM &amp; Agent calls</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary><nav aria-label="Mobile documentation"><div class="nav-group"><p class="nav-label">Start here</p><ul><li><a href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-3H4z"/><path d="M13 7a3 3 0 0 1 3-3h5v14h-4a4 4 0 0 0-4 3"/></svg><span>Introduction</span></a></li><li><a href="getting-started.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg><span>Getting started</span></a></li></ul></div><div class="nav-group"><p class="nav-label">The language</p><ul><li><a href="language.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg><span>Language</span></a></li><li><a href="llm-commands.html" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg><span>LLM & Agent calls</span><span class="nav-indicator" aria-hidden="true"></span></a></li><li><a href="safety.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span>Policies & sandboxing</span></a></li></ul></div><div class="nav-group"><p class="nav-label">Reference</p><ul><li><a href="cli.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span>CLI & runtime</span></a></li><li><a href="grammar.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H6v6l-3 3 3 3v6h2m8-18h2v6l3 3-3 3v6h-2"/></svg><span>Grammar & lint rules</span></a></li></ul></div><div class="nav-group"><p class="nav-label">Guides</p><ul><li><a href="examples.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zm-9 10 9 5 9-5M3 18l9 5 9-5"/></svg><span>Examples</span></a></li></ul></div></nav></details>
+  <main id="page" tabindex="-1">
+    <div class="page-meta"><span>The language</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg><span>LLM &amp; Agent calls</span><span class="reading-time">3 min read</span></div>
+    <header class="page-heading"><h1>LLM &amp; Agent Calls</h1><div class="lead"><p>SPL2 provides three specialized LLM execution keywords—<code>ask</code>, <code>agent</code>, and <code>decide</code>—backed by the OpenAI Responses API, Pydantic Structured Outputs, built-in tools, and Model Context Protocol (MCP) servers.</p></div></header>
+    <details class="mobile-toc"><summary>On this page <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary><nav class="toc-links" aria-label="On this page"><ul><li class="toc-level-2"><a href="#modifiers-reference">Modifiers Reference</a></li><li class="toc-level-2"><a href="#ask--single-turn-llm-calls">ask — Single-Turn LLM Calls</a></li><li class="toc-level-2"><a href="#agent--autonomous-tool-loops--mcp">agent — Autonomous Tool Loops &amp; MCP</a></li><li class="toc-level-3"><a href="#mcp-configuration">MCP Configuration</a></li><li class="toc-level-2"><a href="#decide--boolean-predicate-evaluation">decide — Boolean Predicate Evaluation</a></li></ul></nav></details>
+    <article class="prose"><h2 id="modifiers-reference">Modifiers Reference<a class="heading-anchor" href="#modifiers-reference" aria-label="Link to Modifiers Reference">#</a></h2>
+<p><code>ask</code>, <code>agent</code>, and <code>decide</code> accept optional keyword modifiers inside parentheses:</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="Modifiers Reference reference table"><table>
+<thead>
+<tr>
+<th scope="col">Modifier</th>
+<th scope="col">Applies To</th>
+<th scope="col">Type / Values</th>
+<th scope="col">Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>len</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>&#39;word&#39; | &#39;sentence&#39; | &#39;paragraph&#39; | &#39;long&#39;</code> or <code>str</code></td>
+<td>System prompt guidance instructing target response length</td>
+</tr>
+<tr>
+<td><code>fmt</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>&#39;text&#39; | &#39;object&#39; | &#39;array&#39; | &#39;string&#39; | &#39;float&#39; | &#39;int&#39; | &#39;bool&#39;</code></td>
+<td>Output format validation and parsing (mutually exclusive with <code>schema</code>)</td>
+</tr>
+<tr>
+<td><code>schema</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>type[BaseModel]</code> or <code>TypeAdapter</code> type</td>
+<td>Validates and parses JSON output into a typed Python/Pydantic instance</td>
+</tr>
+<tr>
+<td><code>tokens</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>int &gt; 0</code></td>
+<td>Hard output token limit (<code>max_output_tokens</code>)</td>
+</tr>
+<tr>
+<td><code>retries</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>int &gt;= 0</code> (default <code>0</code>)</td>
+<td>Self-repair retries on validation error and exponential backoff on transient API errors</td>
+</tr>
+<tr>
+<td><code>thinking</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>&#39;none&#39; | &#39;low&#39; | &#39;medium&#39; | &#39;high&#39; | &#39;max&#39;</code></td>
+<td>Reasoning effort mapped to OpenAI reasoning configuration</td>
+</tr>
+<tr>
+<td><code>files</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>str | Path | Sequence[str | Path]</code></td>
+<td>Attaches UTF-8 text (<code>&lt;file&gt;</code>), images (<code>input_image</code>), and PDFs (<code>input_file</code>)</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>ask</code>, <code>agent</code>, <code>decide</code></td>
+<td><code>str</code></td>
+<td>Per-call model override</td>
+</tr>
+<tr>
+<td><code>data</code></td>
+<td><code>decide</code></td>
+<td><code>Any</code></td>
+<td>Structured evidence serialized into the predicate prompt</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td><code>agent</code> only</td>
+<td><code>Sequence[str]</code> or comma-separated <code>str</code></td>
+<td>Allowlist of built-in tools enabled for this agent call</td>
+</tr>
+<tr>
+<td><code>mcp</code></td>
+<td><code>agent</code> only</td>
+<td><code>str | Sequence[str]</code></td>
+<td>Allowlist of MCP servers/tools (<code>&quot;server&quot;</code>, <code>&quot;server/*&quot;</code>, or <code>&quot;server/tool&quot;</code>)</td>
+</tr>
+<tr>
+<td><code>max_steps</code></td>
+<td><code>agent</code> only</td>
+<td><code>int &gt; 0</code> (default <code>25</code>)</td>
+<td>Maximum tool-calling turns in the agent loop</td>
+</tr>
+</tbody></table>
+</div>
+<h2 id="ask--single-turn-llm-calls"><code>ask</code> — Single-Turn LLM Calls<a class="heading-anchor" href="#ask--single-turn-llm-calls" aria-label="Link to ask — Single-Turn LLM Calls">#</a></h2>
+<p><code>ask</code> executes a single-turn, tool-free LLM call. When <code>schema=</code> or <code>fmt=</code> is provided, the response is validated and parsed automatically; if validation fails and <code>retries &gt; 0</code>, SPL2 feeds the validation error back to the model for self-repair.</p>
+<figure class="code-block"><figcaption><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="code-filename">spl2</span><span class="code-language">spl2</span><button type="button" class="copy-button" data-copy="code-1" aria-label="Copy spl2 code" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg><span>Copy</span></button></figcaption><pre tabindex="0" aria-label="spl2 code example"><code class="language-spl2" id="code-1">story <span class="hljs-operator">=</span> <span class="hljs-keyword">ask</span>(<span class="hljs-attr">len</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;paragraph&#x27;</span>, <span class="hljs-attr">fmt</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;text&#x27;</span>) <span class="hljs-string">&#x27;Funny office story&#x27;</span>
+numbers <span class="hljs-operator">=</span> <span class="hljs-keyword">ask</span>(<span class="hljs-attr">fmt</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;array&#x27;</span>, <span class="hljs-attr">retries</span><span class="hljs-operator">=</span><span class="hljs-number">1</span>) <span class="hljs-string">&#x27;Return the first 5 prime numbers as a JSON array&#x27;</span>
+</code></pre></figure>
+<h2 id="agent--autonomous-tool-loops--mcp"><code>agent</code> — Autonomous Tool Loops &amp; MCP<a class="heading-anchor" href="#agent--autonomous-tool-loops--mcp" aria-label="Link to agent — Autonomous Tool Loops &amp; MCP">#</a></h2>
+<p><code>agent</code> runs an autonomous tool-calling loop bounded by <code>max_steps</code> (default <code>25</code>). By default, agents have access to five built-in tools:</p>
+<ul>
+<li><code>read_file(path)</code>: Reads UTF-8 file contents from the workspace.</li>
+<li><code>write_file(path, content)</code>: Writes UTF-8 content to a file, creating parent directories as needed.</li>
+<li><code>shell(command)</code>: Executes a shell command in the platform default shell, returning combined stdout/stderr.</li>
+<li><code>web_fetch(url)</code>: Fetches HTTP(S) content from a URL.</li>
+<li><code>web_search(query)</code>: Performs a zero-config web search using the DuckDuckGo HTML endpoint (<code>html.duckduckgo.com</code>, overridable via <code>SPL2_SEARCH_URL</code>).</li>
+</ul>
+<figure class="code-block"><figcaption><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="code-filename">repo_agent.spl2</span><span class="code-language">spl2</span><button type="button" class="copy-button" data-copy="code-2" aria-label="Copy repo_agent.spl2 code" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg><span>Copy</span></button></figcaption><pre tabindex="0" aria-label="repo_agent.spl2 code example"><code class="language-spl2" data-file="repo_agent.spl2" id="code-2"><span class="hljs-keyword">restrict</span>(<span class="hljs-attr">fs</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;.&#x27;</span>, <span class="hljs-attr">exec</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;git,pytest&#x27;</span>):
+    <span class="hljs-attr">files</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">agent</span>(<span class="hljs-attr">fmt</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;array&#x27;</span>, <span class="hljs-attr">thinking</span><span class="hljs-operator">=</span><span class="hljs-string">&#x27;medium&#x27;</span>, <span class="hljs-attr">retries</span><span class="hljs-operator">=</span><span class="hljs-number">1</span>) <span class="hljs-string">&#x27;List all the files in current repository and pass paths to json array&#x27;</span>
+    <span class="hljs-keyword">success</span> {<span class="hljs-string">&#x27;files&#x27;</span>: files}
+</code></pre></figure>
+<h3 id="mcp-configuration">MCP Configuration<a class="heading-anchor" href="#mcp-configuration" aria-label="Link to MCP Configuration">#</a></h3>
+<p>Configure local (<code>stdio</code>) and remote (<code>http</code> / <code>sse</code>) MCP servers via <code>--mcp &lt;config.json&gt;</code> or <code>.mcp.json</code> in the working directory:</p>
+<figure class="code-block"><figcaption><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="code-filename">json</span><span class="code-language">json</span><button type="button" class="copy-button" data-copy="code-3" aria-label="Copy json code" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg><span>Copy</span></button></figcaption><pre tabindex="0" aria-label="json code example"><code class="language-json" id="code-3"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">&quot;mcpServers&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+    <span class="hljs-attr">&quot;docs&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;command&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;npx&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;args&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;-y&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;@modelcontextprotocol/server-filesystem&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;.&quot;</span><span class="hljs-punctuation">]</span>
+    <span class="hljs-punctuation">}</span><span class="hljs-punctuation">,</span>
+    <span class="hljs-attr">&quot;remoteApi&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">&quot;url&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;https://mcp.example.com/sse&quot;</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">&quot;headers&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">{</span>
+        <span class="hljs-attr">&quot;Authorization&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;Bearer token&quot;</span>
+      <span class="hljs-punctuation">}</span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">}</span>
+<span class="hljs-punctuation">}</span>
+</code></pre></figure>
+<h2 id="decide--boolean-predicate-evaluation"><code>decide</code> — Boolean Predicate Evaluation<a class="heading-anchor" href="#decide--boolean-predicate-evaluation" aria-label="Link to decide — Boolean Predicate Evaluation">#</a></h2>
+<p><code>decide</code> evaluates a natural-language predicate against optional structured <code>data=</code> evidence and returns a Python <code>bool</code> (<code>True</code> or <code>False</code>):</p>
+<figure class="code-block"><figcaption><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="code-filename">spl2</span><span class="code-language">spl2</span><button type="button" class="copy-button" data-copy="code-4" aria-label="Copy spl2 code" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg><span>Copy</span></button></figcaption><pre tabindex="0" aria-label="spl2 code example"><code class="language-spl2" id="code-4"><span class="hljs-keyword">if</span> <span class="hljs-keyword">decide</span>(<span class="hljs-attr">data</span><span class="hljs-operator">=</span>{<span class="hljs-string">&#x27;latency_ms&#x27;</span>: <span class="hljs-number">42</span>, <span class="hljs-string">&#x27;slo_ms&#x27;</span>: <span class="hljs-number">100</span>}) <span class="hljs-string">&#x27;The service latency is within the SLO&#x27;</span>:
+    <span class="hljs-keyword">success</span> {<span class="hljs-string">&#x27;healthy&#x27;</span>: <span class="hljs-literal">True</span>}
+<span class="hljs-keyword">else</span>:
+    <span class="hljs-keyword">failure</span> <span class="hljs-string">&#x27;SLO breached&#x27;</span>
+</code></pre></figure>
+</article>
+    <footer class="page-footer"><a href="https://github.com/dgawlik/semantic-prompt-language/blob/HEAD/doc/doc-templates/LLM-commands.md"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14z"/></svg>View this page in Markdown <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></a><span>Good tools make intent clear.</span></footer>
+    <nav class="page-pagination" aria-label="Previous and next pages"><a class="page-link previous" href="language.html"><span>Previous</span><strong>Language</strong><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a><a class="page-link next" href="safety.html"><span>Next</span><strong>Policies & sandboxing</strong><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a></nav>
+    <div class="site-colophon"><a class="colophon-brand" href="index.html">spl2.</a><span>Python superset. Clear boundaries.</span><a href="https://github.com/dgawlik/semantic-prompt-language">GitHub <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></a></div>
+  </main>
+  <aside class="right-rail"><div class="toc-heading"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zm-9 10 9 5 9-5M3 18l9 5 9-5"/></svg>On this page</div><nav class="toc-links" aria-label="On this page"><ul><li class="toc-level-2"><a href="#modifiers-reference">Modifiers Reference</a></li><li class="toc-level-2"><a href="#ask--single-turn-llm-calls">ask — Single-Turn LLM Calls</a></li><li class="toc-level-2"><a href="#agent--autonomous-tool-loops--mcp">agent — Autonomous Tool Loops &amp; MCP</a></li><li class="toc-level-3"><a href="#mcp-configuration">MCP Configuration</a></li><li class="toc-level-2"><a href="#decide--boolean-predicate-evaluation">decide — Boolean Predicate Evaluation</a></li></ul></nav><div class="rail-note"><span class="rail-note-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg></span><strong>Iterate with trace replay.</strong><p>Keep Python control flow, Pydantic schemas, and capability guards visible in one script.</p><a href="getting-started.html">Write your first script <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a></div></aside>
+</div>
+<dialog class="search-dialog" aria-labelledby="search-title"><div class="search-header"><h2 id="search-title">Find your way</h2><form method="dialog"><button class="icon-button" aria-label="Close search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button></form></div><search><label class="visually-hidden" for="search-input">Search documentation</label><div class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input id="search-input" type="search" placeholder="Search concepts, keywords, and examples..." autocomplete="off" spellcheck="false" aria-controls="search-results"></div></search><p id="search-status" class="search-status" role="status"></p><ul id="search-results" class="search-results"></ul><div class="search-footer"><span><kbd>Tab</kbd> to navigate</span><span><kbd>Esc</kbd> to close</span><span>Search stays on your device</span></div></dialog>
+<p class="visually-hidden" id="announcement" role="status"></p>
+<noscript><p class="noscript-note">Search, code copying, and the theme switch need JavaScript. All documentation and navigation work without it.</p></noscript>
+</body>
+</html>

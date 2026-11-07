@@ -1,0 +1,15 @@
+from datetime import date
+from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
+
+
+class Person(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    age: int = Field(..., ge=0, le=120, description="Age in years")
+    email: Optional[EmailStr] = None
+    birth_date: date
+
+
+sample_person = ask(schema=Person, retries=2) 'Generate sample person'
+success sample_person

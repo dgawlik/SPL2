@@ -1,0 +1,57 @@
+{
+  "Ask LLM": {
+    "prefix": "ask",
+    "body": [
+      "${1:result} = ask(len='${2|sentence,paragraph,word,long|}', fmt='${3|text,object,array,string,int,float,bool|}') '${4:Prompt}'"
+    ],
+    "description": "Execute a single-turn SPL2 ask LLM call"
+  },
+  "Ask with Pydantic Schema": {
+    "prefix": "askschema",
+    "body": [
+      "${1:item} = ask(schema=${2:ModelClass}, retries=${3:2}) '${4:Generate item}'"
+    ],
+    "description": "Execute an SPL2 ask call validated against a Pydantic BaseModel schema"
+  },
+  "Agent Loop": {
+    "prefix": "agent",
+    "body": [
+      "${1:result} = agent(fmt='${2|text,object,array|}', thinking='${3|low,medium,high|}', max_steps=${4:25}) '${5:Agent instruction}'"
+    ],
+    "description": "Run an autonomous SPL2 agent tool-calling loop"
+  },
+  "Decide Predicate": {
+    "prefix": "decide",
+    "body": [
+      "if decide(data=${1:evidence}) '${2:Predicate holds true}':",
+      "    ${3:success {'status': 'ok'}}",
+      "else:",
+      "    ${4:failure 'Check failed'}"
+    ],
+    "description": "Evaluate a boolean natural-language predicate with decide"
+  },
+  "Enforce Constraint": {
+    "prefix": "enforce",
+    "body": [
+      "enforce '${1:Constraint}':",
+      "    ${0}"
+    ],
+    "description": "Scope a mandatory positive LLM instruction constraint"
+  },
+  "Forbid Constraint": {
+    "prefix": "forbid",
+    "body": [
+      "forbid '${1:Prohibition}':",
+      "    ${0}"
+    ],
+    "description": "Scope a mandatory negative LLM instruction constraint"
+  },
+  "Restrict Capabilities": {
+    "prefix": "restrict",
+    "body": [
+      "restrict(fs='${1:src}', net='${2:*.example.com}', exec='${3:git,pytest}', mcp='${4:docs/*}'):",
+      "    ${0}"
+    ],
+    "description": "Enforce deterministic capability guardrails on built-in tools and MCP"
+  }
+}

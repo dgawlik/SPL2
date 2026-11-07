@@ -1,0 +1,17 @@
+import asyncio
+
+
+async def summarize_aspect(topic: str, tone: str) -> str:
+    enforce f'Write in a {tone} tone':
+        return await ask(len='sentence') f'Explain {topic}'
+
+
+async def main() -> dict:
+    formal, playful = await asyncio.gather(
+        summarize_aspect('quantum computing', 'formal academic'),
+        summarize_aspect('quantum computing', 'playful pirate'),
+    )
+    return {'formal': formal, 'playful': playful}
+
+
+success asyncio.run(main())

@@ -1,0 +1,17 @@
+{
+  "name": "spl2-monorepo",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:build": "node doc/build.mjs",
+    "docs:check": "node doc/build.mjs --check",
+    "vscode:build": "npm --prefix ./vscode run build",
+    "vscode:test": "npm --prefix ./vscode test",
+    "test": "python -m pytest ./lang/tests && npm --prefix ./vscode test && node doc/build.mjs --check"
+  },
+  "devDependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^15.0.0"
+  }
+}
