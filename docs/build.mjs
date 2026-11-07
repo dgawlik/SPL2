@@ -9,7 +9,7 @@ const output = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(output);
 const source = path.join(output, 'doc-templates');
 const logo = fs.readFileSync(path.join(output, 'assets', 'icon.png'));
-const repository = 'https://github.com/dgawlik/semantic-prompt-language';
+const repository = 'https://github.com/dgawlik/SPL2';
 const pyprojectText = fs.readFileSync(path.join(root, 'lang', 'pyproject.toml'), 'utf8');
 const versionMatch = /^version\s*=\s*"([^"]+)"/m.exec(pyprojectText);
 const version = versionMatch ? versionMatch[1] : '2.0.0';

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "docs:build": "node doc/build.mjs",
-    "docs:check": "node doc/build.mjs --check",
+    "docs:build": "node docs/build.mjs",
+    "docs:check": "node docs/build.mjs --check",
     "vscode:build": "npm --prefix ./vscode run build",
     "vscode:test": "npm --prefix ./vscode test",
     "test": "python -m pytest ./lang/tests && npm --prefix ./vscode test && node doc/build.mjs --check"
