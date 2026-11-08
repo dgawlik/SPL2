@@ -5,21 +5,19 @@ Semantic Prompt Language v2 (SPL2) is a syntactic superset of Python for buildin
 `pydantic_person.spl2`
 
 ```spl2
-from datetime import date
-from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class Person(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
     age: int = Field(..., ge=0, le=120, description="Age in years")
-    email: Optional[EmailStr] = None
-    birth_date: date
 
+    @classmethod
+    def generate(cls):
+        return ask(schema=Person, retries=2) 'Generate sample person'
 
-sample_person = ask(schema=Person, retries=2) 'Generate sample person'
-success sample_person
+success Person.generate()
 ```
 
 ## Why SPL2?
