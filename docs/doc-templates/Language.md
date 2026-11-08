@@ -64,6 +64,40 @@ async def main() -> dict:
 success asyncio.run(main())
 ```
 
+## Runnable Markdown Workflows (`.md`)
+
+In addition to standalone `.spl2` files, SPL2 natively executes Markdown documents that opt in via YAML frontmatter:
+
+````markdown
+---
+extension: 'semantic-prompt-language'
+version: 1
+model: 'gpt-4.1'
+---
+
+# Generate a Typed Person
+
+```spl2
+from pydantic import BaseModel, Field
+
+
+class Person(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    age: int = Field(..., ge=0, le=120)
+```
+
+> Generate a sample person @validate[Person] and save to @person
+
+```spl2
+success person
+```
+````
+
+* **Frontmatter**: Requires `extension: semantic-prompt-language` and `version: 1` or `2`. Optional `model` sets the document default model, and optional `preamble` is prepended to all model calls in the document.
+* **Fenced ```` ```spl2 ```` Blocks**: Executed as SPL2/Python code in a single shared module scope, preserving original `.md` line numbers.
+* **Blockquotes (`> ...`)**: Executed as natural-language agent steps that can read and update shared bindings (`load_variable`, `save_variable` with `@validate[Schema]`), call Python functions (`call_function`), apply inline `@ENFORCE`, `@FORBID`, and `@RESTRICT` guardrails, and terminate the document (`success`, `fail`).
+
 ## Importing `.spl2` and Python Modules
 
 SPL2 registers `importlib.abc.MetaPathFinder` and `SourceLoader` hooks when launched via `spl2`:

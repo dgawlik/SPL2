@@ -1,14 +1,14 @@
 # CLI & Runtime Reference
 
-The `spl2` CLI compiles, lints, traces, and executes `.spl2` scripts with built-in record-and-replay caching and a live Textual terminal UI.
+The `spl2` CLI compiles, lints, traces, and executes both `.spl2` scripts and runnable Markdown (`.md`) workflows with built-in record-and-replay caching and a live Textual terminal UI.
 
 ## Command-Line Synopsis
 
 ```bash
-spl2 [options] <script.spl2> [script_args...]
+spl2 [options] <script.spl2|workflow.md> [script_args...]
 ```
 
-All `[script_args...]` following `<script.spl2>` are forwarded into standard Python `sys.argv`.
+All `[script_args...]` following `<script.spl2|workflow.md>` are forwarded into standard Python `sys.argv`.
 
 | Flag | Description |
 | --- | --- |

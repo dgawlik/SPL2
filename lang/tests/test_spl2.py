@@ -848,3 +848,274 @@ def test_realtime_tui_streams_thinking_and_response_as_single_messages():
     assert len(response_entries) == 1
     assert "Hello world!" in response_entries[0]
 
+
+# ---------------------------------------------------------------------------
+# 8. Runnable Markdown Workflows (`.md` Frontmatter, `spl2` Fences, Blockquotes)
+# ---------------------------------------------------------------------------
+
+MD_HEADER = "---\nextension: semantic-prompt-language\nversion: 2\n"
+
+
+def _md_doc(body: str, metadata: str = "") -> str:
+    return f"{MD_HEADER}{metadata}---\n\n{body}"
+
+
+def _spl2_fence(code: str) -> str:
+    return f"```spl2\n{code}\n```"
+
+
+def test_markdown_frontmatter_and_fence_validation():
+    from spl2.markdown import extract_markdown, is_workflow_markdown
+
+    assert is_workflow_markdown(_md_doc("Text")) is True
+    assert is_workflow_markdown(_md_doc("Text").replace("version: 2", "version: 1")) is True
+    assert is_workflow_markdown(_md_doc("Text").replace("extension:", '"extension":')) is True
+    assert is_workflow_markdown("---\nplain scalar\n---") is False
+    assert is_workflow_markdown("# Comment\n" + _md_doc("Text")) is False
+    assert is_workflow_markdown("---\ntitle: ordinary\n---\nextension: semantic-prompt-language") is False
+
+    invalid_cases = [
+        ("", "frontmatter"),
+        ("---\nextension: semantic-prompt-language\nversion: 2", "unterminated YAML frontmatter"),
+        ("---\nextension: wrong\nversion: 2\n---", "extension: semantic-prompt-language"),
+        ("---\nextension: semantic-prompt-language\nversion: 3\n---", "version: 1 or 2"),
+        ("---\nextension: semantic-prompt-language\n---", "version: 1 or 2"),
+        ("---\nextension: semantic-prompt-language\nversion: 2\nversion: 2\n---", "duplicate key"),
+        (_md_doc("", "model: 42\n"), "frontmatter model must be a non-empty string"),
+        (_md_doc("", "preamble: []\n"), "frontmatter preamble must be a string"),
+        (_md_doc("", "unknown: value\n"), "unknown frontmatter field 'unknown'"),
+        (_md_doc("```spl2\nsuccess 1"), "unterminated SPL2 fence"),
+    ]
+    for src, expected_msg in invalid_cases:
+        diags = lint_spl2(src, filename="workflow.md")
+        assert len(diags) >= 1, f"Expected error for: {src!r}"
+        assert expected_msg in diags[0].message
+
+    # Split block across fences must fail validation
+    split_block = _md_doc(_spl2_fence("if True:") + "\n\n" + _spl2_fence("    pass"))
+    diags_split = lint_spl2(split_block, filename="split.md")
+    assert len(diags_split) == 1
+    assert "SyntaxError" in diags_split[0].message
+
+    # Tilde fences, CRLF, multiline YAML preamble, and exact line numbers
+    tilde_src = _md_doc(
+        "~~~spl2\nfailure 'no'\n~~~",
+        "preamble: |\n  Be precise.\n  Be brief.\n",
+    ).replace("\n", "\r\n")
+    extracted = extract_markdown(tilde_src, filename="tilde.md")
+    assert extracted.preamble == "Be precise.\nBe brief.\n"
+    assert extracted.blocks[0].line == 10
+    assert extracted.code.split("\n")[9] == "failure 'no'"
+
+
+def test_markdown_ignores_commentary_non_spl2_fences_and_parses_blockquotes():
+    from spl2.markdown import extract_markdown
+
+    src = _md_doc(
+        f"""Fail now. @failure
+
+```text
+> fail now
+```
+
+```spl
+fail 'v1 fence ignored'
+```
+
+<!--
+> fail now
+-->
+
+- ```spl2
+  failure 'nested list fence ignored'
+  ```
+
+{_spl2_fence("count = 1")}
+
+## A heading comment
+
+{_spl2_fence("count += 2\nsuccess count")}"""
+    )
+    env, exit_code = run_spl2_source(src, filename="commentary.md")
+    assert exit_code == 0
+    assert env == {"status": "ok", "reason": None, "lineno": 32, "data": 3}
+
+    bq_doc = extract_markdown(
+        _md_doc("> First line\ncontinued\n>\n> Second paragraph\n\nComment\n\n> Next instruction")
+    )
+    assert len(bq_doc.blocks) == 2
+    assert bq_doc.blocks[0].kind == "natural"
+    assert bq_doc.blocks[0].text == "First line\ncontinued\n\nSecond paragraph"
+    assert bq_doc.blocks[1].kind == "natural"
+    assert bq_doc.blocks[1].text == "Next instruction"
+
+
+def test_markdown_mixed_fences_and_blockquotes_with_pydantic_and_preamble():
+    calls: list[dict[str, Any]] = []
+    step = 0
+
+    def handler(kwargs):
+        nonlocal step
+        calls.append(kwargs)
+        step += 1
+        if step == 1:
+            # Blockquote 1: call `double(2)` and save `count = 4`
+            return make_mock_response(
+                tool_calls=[
+                    {
+                        "call_id": "c1",
+                        "name": "call_function",
+                        "arguments": json.dumps({"name": "double", "args": [2]}),
+                    },
+                    {
+                        "call_id": "c2",
+                        "name": "save_variable",
+                        "arguments": json.dumps({"name": "count", "value": 4}),
+                    },
+                ]
+            )
+        if step == 2:
+            # Finish blockquote 1
+            return make_mock_response("Updated count.")
+        if step == 3:
+            # Blockquote 2: validate and save Pydantic `Person` instance to `@person`
+            return make_mock_response(
+                tool_calls=[
+                    {
+                        "call_id": "c3",
+                        "name": "save_variable",
+                        "arguments": json.dumps(
+                            {
+                                "name": "person",
+                                "value": {
+                                    "first_name": "Ada",
+                                    "last_name": "Lovelace",
+                                    "age": 36,
+                                },
+                            }
+                        ),
+                    }
+                ]
+            )
+        return make_mock_response("Saved person.")
+
+    set_openai_clients(sync_client=FakeOpenAIClient(handler))
+
+    md_source = _md_doc(
+        f"""{_spl2_fence('''from pydantic import BaseModel
+
+class Person(BaseModel):
+    first_name: str
+    last_name: str
+    age: int
+
+count = 2
+def double(x):
+    return x * 2
+''')}
+
+> Set @count to @double of its current value.
+
+{_spl2_fence("assert count == 4")}
+
+> Generate a person @validate[Person] and save to @person
+
+{_spl2_fence("assert isinstance(person, Person)\nsuccess {'count': count, 'name': f'{person.first_name} {person.last_name}'}")}
+""",
+        metadata="model: frontmatter-model\npreamble: Be concise and accurate.\n",
+    )
+
+    env, exit_code = run_spl2_source(md_source, filename="mixed.md")
+    assert exit_code == 0
+    assert env["status"] == "ok"
+    assert env["data"] == {"count": 4, "name": "Ada Lovelace"}
+    assert len(calls) == 4
+    for c in calls:
+        assert c["model"] == "frontmatter-model"
+        assert "Be concise and accurate." in c["instructions"]
+
+
+def test_markdown_inline_blockquote_directives_and_trace_replay(tmp_path: Path):
+    trace_file = tmp_path / "md_workflow.trace.jsonl"
+    allowed_dir = tmp_path / "reports"
+    allowed_dir.mkdir()
+    report_file = allowed_dir / "out.txt"
+
+    llm_calls = 0
+
+    def handler(kwargs):
+        nonlocal llm_calls
+        llm_calls += 1
+        if llm_calls == 1:
+            # Verify @ENFORCE and @FORBID from blockquote are in instructions
+            assert "Write in uppercase" in kwargs["instructions"]
+            assert "Using lowercase" in kwargs["instructions"]
+            return make_mock_response(
+                tool_calls=[
+                    {
+                        "call_id": "w1",
+                        "name": "write_file",
+                        "arguments": json.dumps(
+                            {"path": str(report_file), "content": "REPORT DATA"}
+                        ),
+                    },
+                    {
+                        "call_id": "s1",
+                        "name": "save_variable",
+                        "arguments": json.dumps(
+                            {"name": "summary", "value": {"title": "OK"}}
+                        ),
+                    },
+                ]
+            )
+        return make_mock_response("Completed.")
+
+    set_openai_clients(sync_client=FakeOpenAIClient(handler))
+
+    md_source = _md_doc(
+        f"""> @ENFORCE Write in uppercase
+> @FORBID Using lowercase
+> @RESTRICT fs['{allowed_dir.as_posix()}']
+>
+> Write report and save @summary.
+
+{_spl2_fence("success summary.title")}
+"""
+    )
+
+    # First run: records to trace_file
+    env1, code1 = run_spl2_source(
+        md_source, filename=str(tmp_path / "flow.md"), trace_path=trace_file
+    )
+    assert code1 == 0
+    assert env1["data"] == "OK"
+    assert report_file.read_text(encoding="utf-8") == "REPORT DATA"
+    assert llm_calls == 2
+
+    # Modify file on disk to verify replay does not re-run blockquote side effects
+    report_file.write_text("EDITED ON DISK", encoding="utf-8")
+
+    # Second run: replays blockquote from trace with 0 new LLM calls
+    env2, code2 = run_spl2_source(
+        md_source, filename=str(tmp_path / "flow.md"), trace_path=trace_file
+    )
+    assert code2 == 0
+    assert env2["data"] == "OK"
+    assert report_file.read_text(encoding="utf-8") == "EDITED ON DISK"
+    assert llm_calls == 2
+
+
+def test_cli_check_and_emit_py_on_markdown_and_all_examples(capsys):
+    examples_dir = Path(__file__).resolve().parent.parent / "examples"
+    spl2_files = sorted(examples_dir.glob("*.spl2"))
+    md_files = sorted(examples_dir.glob("*.md"))
+    assert len(spl2_files) >= 5
+    assert len(md_files) >= 2
+
+    for f in [*spl2_files, *md_files]:
+        assert cli_main(["--check", str(f)]) == 0
+        assert cli_main(["--emit-py", str(f)]) == 0
+        out_py, _ = capsys.readouterr()
+        assert "from spl2.runtime import" in out_py
+
+

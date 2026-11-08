@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spl2"
-version = "2.0.0"
+version = "2.1.0"
 description = "Semantic Prompt Language v2 (SPL2) — a syntactic superset of Python for building reliable LLM and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "email-validator>=2.0.0",
     "textual>=0.80.0",
+    "markdown-it-py>=3.0.0",
 ]
 
 [project.optional-dependencies]

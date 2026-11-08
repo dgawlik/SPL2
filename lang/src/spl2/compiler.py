@@ -161,6 +161,7 @@ class PreprocessedResult:
     source: str
     original_lines: list[str]
     line_anchors: dict[int, list[ColumnAnchor]] = field(default_factory=dict)
+    markdown_doc: Any = None
 
     def map_col_to_orig(self, lineno: int, gen_col: int) -> int:
         """Convert 0-based generated column to 0-based original .spl2 column."""
@@ -1249,6 +1250,50 @@ class _SPL2ASTTransformer(ast.NodeTransformer):
             )
             return ast.copy_location(call_node, node)
 
+        if fn == "__spl2_natural__":
+            args = [self.visit(a) for a in node.args]
+            args.extend(
+                [
+                    ast.Call(
+                        func=ast.Name(id="globals", ctx=ast.Load()),
+                        args=[],
+                        keywords=[],
+                    ),
+                    ast.Call(
+                        func=ast.Name(id="locals", ctx=ast.Load()),
+                        args=[],
+                        keywords=[],
+                    ),
+                ]
+            )
+            keywords = [
+                ast.copy_location(
+                    ast.keyword(arg=kw.arg, value=self.visit(kw.value)),
+                    kw,
+                )
+                for kw in node.keywords
+            ]
+            if not any(kw.arg == "__lineno__" for kw in keywords):
+                keywords.append(
+                    ast.copy_location(
+                        ast.keyword(
+                            arg="__lineno__",
+                            value=ast.Constant(value=getattr(node, "lineno", 1)),
+                        ),
+                        node,
+                    )
+                )
+            call_node = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="__spl2_runtime__", ctx=ast.Load()),
+                    attr="natural_sync",
+                    ctx=ast.Load(),
+                ),
+                args=args,
+                keywords=keywords,
+            )
+            return ast.copy_location(call_node, node)
+
         return self.generic_visit(node)
 
     def visit_Await(self, node: ast.Await) -> ast.AST:
@@ -1268,11 +1313,86 @@ class _SPL2ASTTransformer(ast.NodeTransformer):
 def parse_and_validate_spl2(
     source: str, filename: str = "<spl2>"
 ) -> tuple[ast.Module, PreprocessedResult, list[LintDiagnostic]]:
-    """Preprocess, parse with ast.parse, and run static lint rules on SPL2 source."""
+    """Preprocess, parse with ast.parse, and run static lint rules on SPL2 or Markdown workflow source."""
+    from .markdown import extract_markdown, is_markdown_source
+
+    original_lines = source.splitlines(keepends=True)
+    markdown_doc = None
+    target_source = source
+
+    if is_markdown_source(source, filename=filename):
+        try:
+            markdown_doc = extract_markdown(source, filename=filename)
+        except SPL2SyntaxError as exc:
+            return (
+                ast.Module(body=[], type_ignores=[]),
+                PreprocessedResult(source, original_lines),
+                exc.diagnostics,
+            )
+
+        # Validate each fenced SPL2 block independently so blocks/statements cannot span fences
+        for block in markdown_doc.blocks:
+            if block.kind != "spl2" or not block.text.strip():
+                continue
+            block_padded = "\n" * (block.line - 1) + block.text
+            try:
+                block_prep = preprocess_spl2(block_padded, filename=filename)
+            except SPL2SyntaxError as exc:
+                return (
+                    ast.Module(body=[], type_ignores=[]),
+                    PreprocessedResult(source, original_lines, markdown_doc=markdown_doc),
+                    exc.diagnostics,
+                )
+            try:
+                ast.parse(block_prep.source, filename=filename)
+            except SyntaxError as exc:
+                lineno = exc.lineno or block.line
+                gen_col0 = max(0, (exc.offset or 1) - 1)
+                orig_col0 = block_prep.map_col_to_orig(lineno, gen_col0)
+                line_text = (
+                    original_lines[lineno - 1]
+                    if 1 <= lineno <= len(original_lines)
+                    else (exc.text or "")
+                )
+                diag = LintDiagnostic(
+                    filename=filename,
+                    lineno=lineno,
+                    col_offset=orig_col0 + 1,
+                    message=f"SyntaxError: {exc.msg}",
+                    rule="syntax",
+                    source_line=line_text,
+                )
+                return (
+                    ast.Module(body=[], type_ignores=[]),
+                    PreprocessedResult(source, original_lines, markdown_doc=markdown_doc),
+                    [diag],
+                )
+
+        target_source = markdown_doc.code
+
     try:
-        prep = preprocess_spl2(source, filename=filename)
+        prep = preprocess_spl2(target_source, filename=filename)
     except SPL2SyntaxError as exc:
-        return ast.Module(body=[], type_ignores=[]), PreprocessedResult(source, source.splitlines(keepends=True)), exc.diagnostics
+        return (
+            ast.Module(body=[], type_ignores=[]),
+            PreprocessedResult(source, original_lines, markdown_doc=markdown_doc),
+            exc.diagnostics,
+        )
+
+    prep.original_lines = original_lines
+    prep.markdown_doc = markdown_doc
+
+    if markdown_doc is not None:
+        prep_lines = prep.source.split("\n")
+        for block in markdown_doc.blocks:
+            if block.kind == "natural":
+                idx = block.line - 1
+                while len(prep_lines) <= idx:
+                    prep_lines.append("")
+                prep_lines[idx] = (
+                    f"__spl2_natural__({block.text!r}, __lineno__={block.line})"
+                )
+        prep.source = "\n".join(prep_lines)
 
     try:
         tree = ast.parse(prep.source, filename=filename)
@@ -1308,12 +1428,12 @@ def parse_and_validate_spl2(
 
 
 def lint_spl2(source: str, filename: str = "<spl2>") -> list[LintDiagnostic]:
-    """Run static lint and AST validation on SPL2 source, returning any diagnostics."""
+    """Run static lint and AST validation on SPL2 or Markdown workflow source, returning any diagnostics."""
     _, _, diagnostics = parse_and_validate_spl2(source, filename=filename)
     return diagnostics
 
 
-def transform_spl2_ast(tree: ast.Module) -> ast.Module:
+def transform_spl2_ast(tree: ast.Module, markdown_doc: Any = None) -> ast.Module:
     """Transform validated SPL2 AST into executable Python AST."""
     transformer = _SPL2ASTTransformer()
     transformed = transformer.visit(tree)
@@ -1335,27 +1455,53 @@ def transform_spl2_ast(tree: ast.Module) -> ast.Module:
             continue
         break
     transformed.body.insert(insert_pos, import_node)
+
+    if markdown_doc is not None:
+        cfg_node = ast.Expr(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="__spl2_runtime__", ctx=ast.Load()),
+                    attr="configure_markdown_context",
+                    ctx=ast.Load(),
+                ),
+                args=[],
+                keywords=[
+                    ast.keyword(
+                        arg="model",
+                        value=ast.Constant(value=markdown_doc.model),
+                    ),
+                    ast.keyword(
+                        arg="preamble",
+                        value=ast.Constant(value=markdown_doc.preamble),
+                    ),
+                ],
+            ),
+            lineno=1,
+            col_offset=0,
+        )
+        transformed.body.insert(insert_pos + 1, cfg_node)
+
     ast.fix_missing_locations(transformed)
     return transformed
 
 
 def compile_spl2(source: str, filename: str = "<spl2>"):
-    """Compile SPL2 source code into Python bytecode after static lint and AST transformation."""
-    tree, _, diagnostics = parse_and_validate_spl2(source, filename=filename)
+    """Compile SPL2 or Markdown workflow source code into Python bytecode after static lint and AST transformation."""
+    tree, prep, diagnostics = parse_and_validate_spl2(source, filename=filename)
     if diagnostics:
         raise SPL2SyntaxError(diagnostics)
-    transformed = transform_spl2_ast(tree)
+    transformed = transform_spl2_ast(tree, markdown_doc=prep.markdown_doc)
     return compile(transformed, filename=filename, mode="exec")
 
 
 def transpile_spl2(source: str, filename: str = "<spl2>") -> str:
-    """Transpile SPL2 source code into executable Python source while preserving original line numbers."""
+    """Transpile SPL2 or Markdown workflow source code into executable Python source while preserving original line numbers."""
     tree, prep, diagnostics = parse_and_validate_spl2(source, filename=filename)
     if diagnostics:
         raise SPL2SyntaxError(diagnostics)
 
     # Also rewrite `await __spl2_ask__(...)` in prep.source to `await __spl2_async_ask__(...)`
-    # so the transpiled source has exact 1-to-1 line alignment with the original .spl2 file!
+    # so the transpiled source has exact 1-to-1 line alignment with the original file!
     lines = prep.source.splitlines(keepends=True)
     # Replace `__spl2_ask__(` preceded by `await` with `__spl2_async_ask__(` etc.
     import re
@@ -1366,6 +1512,12 @@ def transpile_spl2(source: str, filename: str = "<spl2>") -> str:
         r"await\1__spl2_async_\2__(",
         transpiled_body,
     )
+    md_cfg_call = ""
+    if prep.markdown_doc is not None:
+        md_cfg_call = (
+            f"__spl2_md_ctx__(model={prep.markdown_doc.model!r}, "
+            f"preamble={prep.markdown_doc.preamble!r}); "
+        )
     prelude = (
         "from spl2.runtime import (\n"
         "    _emit_py_ask as __spl2_ask__,\n"
@@ -1374,6 +1526,8 @@ def transpile_spl2(source: str, filename: str = "<spl2>") -> str:
         "    _emit_py_async_agent as __spl2_async_agent__,\n"
         "    _emit_py_decide as __spl2_decide__,\n"
         "    _emit_py_async_decide as __spl2_async_decide__,\n"
+        "    _emit_py_natural as __spl2_natural__,\n"
+        "    configure_markdown_context as __spl2_md_ctx__,\n"
         "    enforce_scope as __spl2_enforce__,\n"
         "    forbid_scope as __spl2_forbid__,\n"
         "    restrict_scope as __spl2_restrict__,\n"
@@ -1381,15 +1535,16 @@ def transpile_spl2(source: str, filename: str = "<spl2>") -> str:
         "    trigger_failure as __spl2_failure__,\n"
         ")  # fmt: skip\n"
     )
-    # To preserve exact line numbers in the emitted file, put the prelude on line 1 if possible or comment-indexed:
+    # To preserve exact line numbers in the emitted file, put the prelude on line 1 if possible:
     single_line_prelude = (
         "from spl2.runtime import _emit_py_ask as __spl2_ask__, _emit_py_async_ask as __spl2_async_ask__, "
         "_emit_py_agent as __spl2_agent__, _emit_py_async_agent as __spl2_async_agent__, "
         "_emit_py_decide as __spl2_decide__, _emit_py_async_decide as __spl2_async_decide__, "
+        "_emit_py_natural as __spl2_natural__, configure_markdown_context as __spl2_md_ctx__, "
         "enforce_scope as __spl2_enforce__, forbid_scope as __spl2_forbid__, "
         "restrict_scope as __spl2_restrict__, trigger_success as __spl2_success__, "
-        "trigger_failure as __spl2_failure__; "
+        "trigger_failure as __spl2_failure__; " + md_cfg_call
     )
     if transpiled_body.startswith("#!") or transpiled_body.lstrip().startswith("from __future__"):
-        return prelude + transpiled_body
+        return prelude + (md_cfg_call + "\n" if md_cfg_call else "") + transpiled_body
     return single_line_prelude + transpiled_body

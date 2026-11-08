@@ -4,6 +4,21 @@
   "patterns": [
     {
       "include": "#spl2-fenced-code-block"
+    },
+    {
+      "begin": "^ {0,3}>\\s?",
+      "end": "$",
+      "name": "markup.quote.spl2",
+      "contentName": "string.unquoted.blockquote.spl2",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.quote.begin.spl2" }
+      },
+      "patterns": [
+        {
+          "match": "(?<![\\w@])@[A-Za-z_]\\w*",
+          "name": "meta.embedded.inline.spl2 variable.other.reference.spl2"
+        }
+      ]
     }
   ],
   "repository": {

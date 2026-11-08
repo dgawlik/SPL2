@@ -66,12 +66,12 @@ def _parse_cli_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]
     parser.add_argument(
         "script",
         type=str,
-        help="Path to the .spl2 script to execute or check.",
+        help="Path to the .spl2 or runnable .md script to execute or check.",
     )
     parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
-        help="Arguments passed to the .spl2 script in sys.argv.",
+        help="Arguments passed to the .spl2 or .md script in sys.argv.",
     )
     ns = parser.parse_args(list(argv))
     return ns, list(ns.script_args)

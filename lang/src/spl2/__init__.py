@@ -23,7 +23,16 @@ from .context import (
     restrict_scope,
 )
 from .importer import install_import_hook, uninstall_import_hook
+from .markdown import (
+    EXTENSION,
+    MarkdownBlock,
+    MarkdownDocument,
+    extract_markdown,
+    is_markdown_source,
+    is_workflow_markdown,
+)
 from .runtime import (
+    AttrDict,
     SPL2FailureException,
     SPL2RuntimeError,
     SPL2SuccessException,
@@ -31,16 +40,24 @@ from .runtime import (
     agent_sync,
     ask_async,
     ask_sync,
+    configure_markdown_context,
     decide_async,
     decide_sync,
+    natural_sync,
     run_spl2_file,
     run_spl2_source,
-     trigger_failure,
+    trigger_failure,
     trigger_success,
 )
 
 __all__ = [
     "__version__",
+    "EXTENSION",
+    "MarkdownBlock",
+    "MarkdownDocument",
+    "extract_markdown",
+    "is_markdown_source",
+    "is_workflow_markdown",
     "LintDiagnostic",
     "SPL2SyntaxError",
     "compile_spl2",
@@ -57,6 +74,7 @@ __all__ = [
     "get_active_restrict",
     "install_import_hook",
     "uninstall_import_hook",
+    "AttrDict",
     "SPL2FailureException",
     "SPL2RuntimeError",
     "SPL2SuccessException",
@@ -66,6 +84,8 @@ __all__ = [
     "agent_async",
     "decide_sync",
     "decide_async",
+    "natural_sync",
+    "configure_markdown_context",
     "trigger_success",
     "trigger_failure",
     "run_spl2_file",

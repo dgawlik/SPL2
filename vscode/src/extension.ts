@@ -5,6 +5,7 @@ import { LanguageClient, TransportKind } from 'vscode-languageclient/node';
 import { TextDocument as LspTextDocument } from 'vscode-languageserver-textdocument';
 import {
     analyzeSPL2Document,
+    isWorkflowMarkdown,
     origToVirtualPosition,
     virtualToOrigRange,
     type SPL2Analysis,
@@ -15,13 +16,19 @@ const VIRTUAL_SCHEME = 'spl2-virtual-py';
 
 let client: LanguageClient | undefined;
 
+function isRunnableSPL2Document(doc: vscode.TextDocument): boolean {
+    if (doc.languageId === 'spl2') return true;
+    if (doc.languageId === 'markdown') return isWorkflowMarkdown(doc.getText());
+    return false;
+}
+
 class SPL2VirtualPythonProvider implements vscode.TextDocumentContentProvider {
     private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
     readonly onDidChange = this._onDidChange.event;
     private readonly _cache = new Map<string, SPL2Analysis>();
 
     update(doc: vscode.TextDocument): SPL2Analysis {
-        const lspDoc = LspTextDocument.create(doc.uri.toString(), 'spl2', doc.version, doc.getText());
+        const lspDoc = LspTextDocument.create(doc.uri.toString(), doc.languageId, doc.version, doc.getText());
         const analysis = analyzeSPL2Document(lspDoc);
         const vUri = this.toVirtualUri(doc.uri);
         this._cache.set(vUri.toString(), analysis);
@@ -53,19 +60,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     context.subscriptions.push(
         vscode.workspace.onDidOpenTextDocument((doc) => {
-            if (doc.languageId === 'spl2') virtualProvider.update(doc);
+            if (isRunnableSPL2Document(doc)) virtualProvider.update(doc);
         }),
         vscode.workspace.onDidChangeTextDocument((e) => {
-            if (e.document.languageId === 'spl2') virtualProvider.update(e.document);
+            if (isRunnableSPL2Document(e.document)) virtualProvider.update(e.document);
         }),
     );
 
     // Bridge completions and hover from Pylance/Pyright on the preprocessed virtual Python document
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider(
-            { language: 'spl2' },
+            [{ language: 'spl2' }, { language: 'markdown' }],
             {
                 async provideCompletionItems(document, position) {
+                    if (!isRunnableSPL2Document(document)) return [];
                     const analysis = virtualProvider.update(document);
                     const vUri = virtualProvider.toVirtualUri(document.uri);
                     const vPos = origToVirtualPosition(analysis, position);
@@ -84,9 +92,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             '.',
         ),
         vscode.languages.registerHoverProvider(
-            { language: 'spl2' },
+            [{ language: 'spl2' }, { language: 'markdown' }],
             {
                 async provideHover(document, position) {
+                    if (!isRunnableSPL2Document(document)) return null;
                     const analysis = virtualProvider.update(document);
                     const vUri = virtualProvider.toVirtualUri(document.uri);
                     const vPos = origToVirtualPosition(analysis, position);
@@ -126,7 +135,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.commands.registerCommand('spl2.checkCurrentFile', async () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'spl2') return;
+            if (!editor || !isRunnableSPL2Document(editor.document)) return;
             await editor.document.save();
             const pythonPath = vscode.workspace.getConfiguration('spl2').get<string>('pythonPath', 'python');
             try {
@@ -141,7 +150,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
         vscode.commands.registerCommand('spl2.emitPython', async () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'spl2') return;
+            if (!editor || !isRunnableSPL2Document(editor.document)) return;
             const analysis = virtualProvider.update(editor.document);
             const doc = await vscode.workspace.openTextDocument({
                 language: 'python',
@@ -151,7 +160,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
         vscode.commands.registerCommand('spl2.runFile', async () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'spl2') return;
+            if (!editor || !isRunnableSPL2Document(editor.document)) return;
             await editor.document.save();
             const pythonPath = vscode.workspace.getConfiguration('spl2').get<string>('pythonPath', 'python');
             const terminal = vscode.window.createTerminal('SPL2 Run');
@@ -168,7 +177,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             transport: TransportKind.ipc,
         },
         {
-            documentSelector: [{ language: 'spl2' }],
+            documentSelector: [{ language: 'spl2' }, { language: 'markdown' }],
             outputChannel,
         },
     );

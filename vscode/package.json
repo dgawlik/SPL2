@@ -2,7 +2,7 @@
   "name": "spl2-vscode",
   "displayName": "SPL2 - Semantic Prompt Language v2",
   "description": "Syntax highlighting, static linting, and Pylance/Pyright language server integration for Semantic Prompt Language v2 (.spl2)",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "publisher": "spl-lang",
   "icon": "icon.png",
   "license": "MIT",
@@ -17,7 +17,8 @@
   },
   "main": "./out/extension.cjs",
   "activationEvents": [
-    "onLanguage:spl2"
+    "onLanguage:spl2",
+    "onLanguage:markdown"
   ],
   "categories": [
     "Programming Languages",
@@ -100,6 +101,10 @@
       {
         "language": "spl2",
         "path": "./snippets/spl2.code-snippets"
+      },
+      {
+        "language": "markdown",
+        "path": "./snippets/markdown.code-snippets"
       }
     ]
   },

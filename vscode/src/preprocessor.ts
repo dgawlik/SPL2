@@ -82,9 +82,36 @@ export const PYLANCE_TYPING_HEADER =
     'def __spl2_forbid__(expr: _Any = None) -> _ACM[None]: ...\n' +
     'def __spl2_restrict__(**kw: _Any) -> _ACM[_Any]: ...\n' +
     'def __spl2_success__(val: _Any = None) -> None: ...\n' +
-    'def __spl2_failure__(reason: _Any = None) -> None: ...\n';
+    'def __spl2_failure__(reason: _Any = None) -> None: ...\n' +
+    'def __spl2_natural__(text: str, **kw: _Any) -> _Any: ...\n';
 
 export const PYLANCE_HEADER_LINE_COUNT = PYLANCE_TYPING_HEADER.split('\n').length - 1;
+export const EXTENSION = 'semantic-prompt-language';
+
+export interface MarkdownBlock {
+    kind: 'spl2' | 'natural';
+    text: string;
+    line: number; // 1-based
+    endLine: number; // 1-based
+}
+
+export interface MarkdownDocument {
+    version: number;
+    model?: string;
+    preamble?: string;
+    blocks: MarkdownBlock[];
+    code: string;
+}
+
+export class SPL2MarkdownError extends Error {
+    constructor(
+        message: string,
+        public readonly line: number = 1,
+        public readonly col: number = 1,
+    ) {
+        super(message);
+    }
+}
 
 export interface ColumnAnchor {
     genCol: number;
@@ -118,6 +145,304 @@ export interface SPL2Analysis {
     lineAnchors: Map<number, ColumnAnchor[]>;
     diagnostics: Diagnostic[];
     symbols: Map<string, SymbolDef>;
+    isMarkdown?: boolean;
+    isWorkflow?: boolean;
+    blocks?: MarkdownBlock[];
+}
+
+function unquoteYamlString(raw: string, line: number): string {
+    if (raw.startsWith("'") && raw.endsWith("'") && raw.length >= 2) {
+        const inner = raw.slice(1, -1);
+        if (inner.replace(/''/g, '').includes("'")) {
+            throw new SPL2MarkdownError('invalid frontmatter: unescaped single quote in string', line, 1);
+        }
+        return inner.replace(/''/g, "'");
+    }
+    if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
+        const inner = raw.slice(1, -1);
+        let out = '';
+        for (let i = 0; i < inner.length; i++) {
+            const ch = inner[i];
+            if (ch === '\\') {
+                if (i + 1 >= inner.length) {
+                    throw new SPL2MarkdownError('invalid frontmatter: trailing backslash in double-quoted string', line, 1);
+                }
+                const nxt = inner[++i];
+                const map: Record<string, string> = { n: '\n', r: '\r', t: '\t', '0': '\0', '\\': '\\', '"': '"', '/': '/' };
+                out += map[nxt] ?? nxt;
+                continue;
+            }
+            if (ch === '"') {
+                throw new SPL2MarkdownError('invalid frontmatter: unescaped double quote in string', line, 1);
+            }
+            out += ch;
+        }
+        return out;
+    }
+    throw new SPL2MarkdownError('invalid frontmatter: unterminated quoted string', line, 1);
+}
+
+function stripInlineYamlComment(val: string): string {
+    let inQuote: string | null = null;
+    for (let i = 0; i < val.length; i++) {
+        const ch = val[i];
+        if (inQuote) {
+            if (ch === '\\' && inQuote === '"') {
+                i++;
+                continue;
+            }
+            if (ch === inQuote) inQuote = null;
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            inQuote = ch;
+            continue;
+        }
+        if (ch === '#' && (i === 0 || val[i - 1] === ' ' || val[i - 1] === '\t')) {
+            return val.slice(0, i).trimEnd();
+        }
+    }
+    return val.trim();
+}
+
+function parseYamlScalar(rawVal: string, line: number): unknown {
+    const val = stripInlineYamlComment(rawVal.trim());
+    if (!val) return null;
+    if (val[0] === "'" || val[0] === '"') {
+        return unquoteYamlString(val, line);
+    }
+    if (val.startsWith('[') || val.startsWith('{')) {
+        if (val.startsWith('[') && val.endsWith(']')) return [];
+        if (val.startsWith('{') && val.endsWith('}')) return {};
+        throw new SPL2MarkdownError(`invalid frontmatter: malformed collection ${val}`, line, 1);
+    }
+    const lowered = val.toLowerCase();
+    if (lowered === 'true' || lowered === 'yes') return true;
+    if (lowered === 'false' || lowered === 'no') return false;
+    if (lowered === 'null' || lowered === '~') return null;
+    if (/^[+-]?\d+$/.test(val)) return Number.parseInt(val, 10);
+    if (/^[+-]?\d+\.\d+$/.test(val)) return Number.parseFloat(val);
+    return val;
+}
+
+function parseYamlFrontmatter(fmLines: string[]): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    let hasNonEmpty = false;
+    let i = 0;
+    while (i < fmLines.length) {
+        const rawLine = fmLines[i];
+        const stripped = rawLine.trim();
+        if (!stripped || stripped.startsWith('#')) {
+            i++;
+            continue;
+        }
+        hasNonEmpty = true;
+        const m = /^(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))[ \t]*:(?:[ \t]+(.*)|[ \t]*)$/.exec(rawLine);
+        if (!m) {
+            if (Object.keys(result).length === 0 && !rawLine.includes(':')) {
+                throw new SPL2MarkdownError('frontmatter must be a mapping', 2, 1);
+            }
+            throw new SPL2MarkdownError(`invalid frontmatter on line ${i + 2}`, 2, 1);
+        }
+        const key = m[1] || m[2] || m[3];
+        const rest = (m[4] || '').trim();
+        if (Object.prototype.hasOwnProperty.call(result, key)) {
+            throw new SPL2MarkdownError(`invalid frontmatter: duplicate key '${key}'`, 2, 1);
+        }
+        const blockMatch = /^([|>])([+-])?(?:[ \t]+#.*)?$/.exec(rest);
+        if (blockMatch) {
+            const style = blockMatch[1];
+            const chomp = blockMatch[2] || '';
+            i++;
+            const blockLines: string[] = [];
+            let blockIndent: number | null = null;
+            while (i < fmLines.length) {
+                const bLine = fmLines[i];
+                if (!bLine.trim()) {
+                    blockLines.push('');
+                    i++;
+                    continue;
+                }
+                const curIndent = bLine.length - bLine.replace(/^ +/, '').length;
+                if (blockIndent === null) {
+                    if (curIndent === 0) break;
+                    blockIndent = curIndent;
+                }
+                if (curIndent < blockIndent) break;
+                blockLines.push(bLine.slice(blockIndent));
+                i++;
+            }
+            let trailingNewlines = 0;
+            while (blockLines.length > 0 && blockLines[blockLines.length - 1] === '') {
+                blockLines.pop();
+                trailingNewlines++;
+            }
+            const text = style === '|' ? blockLines.join('\n') : blockLines.join(' ');
+            if (chomp === '-') {
+                result[key] = text;
+            } else if (chomp === '+') {
+                result[key] = text ? text + '\n'.repeat(1 + trailingNewlines) : '';
+            } else {
+                result[key] = text ? text + '\n' : '';
+            }
+            continue;
+        }
+        result[key] = parseYamlScalar(rest, 2);
+        i++;
+    }
+    if (!hasNonEmpty) {
+        throw new SPL2MarkdownError('frontmatter must be a mapping', 2, 1);
+    }
+    return result;
+}
+
+export function isWorkflowMarkdown(source: string): boolean {
+    const normalized = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const m = /^---[ \t]*\n([\s\S]*?)\n(?:---|\.\.\.)[ \t]*(?:\n|$)/.exec(normalized);
+    if (!m) return false;
+    const fmText = m[1];
+    try {
+        const meta = parseYamlFrontmatter(fmText.split('\n'));
+        return meta.extension === EXTENSION;
+    } catch {
+        return fmText.split('\n').some((line) =>
+            /^[ \t]*(?:"extension"|'extension'|extension)[ \t]*:[ \t]*(?:"semantic-prompt-language"|'semantic-prompt-language'|semantic-prompt-language)[ \t]*(?:#.*)?$/.test(line),
+        );
+    }
+}
+
+export function extractMarkdown(source: string): MarkdownDocument {
+    const normalized = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const lines = normalized.split('\n');
+    if (!/^---[ \t]*$/.test(lines[0] ?? '')) {
+        throw new SPL2MarkdownError('Markdown workflows require YAML frontmatter', 1, 1);
+    }
+    const endIdx = lines.findIndex((line, idx) => idx > 0 && /^(?:---|\.\.\.)[ \t]*$/.test(line));
+    if (endIdx < 0) {
+        throw new SPL2MarkdownError('unterminated YAML frontmatter', 1, 1);
+    }
+    const metadata = parseYamlFrontmatter(lines.slice(1, endIdx));
+    if (metadata.extension !== EXTENSION) {
+        throw new SPL2MarkdownError(`frontmatter requires extension: ${EXTENSION}`, 2, 1);
+    }
+    if (typeof metadata.version !== 'number' || (metadata.version !== 1 && metadata.version !== 2)) {
+        throw new SPL2MarkdownError('frontmatter requires version: 1 or 2', 2, 1);
+    }
+    for (const key of Object.keys(metadata)) {
+        if (!['extension', 'version', 'model', 'preamble'].includes(key)) {
+            throw new SPL2MarkdownError(`unknown frontmatter field '${key}'`, 2, 1);
+        }
+    }
+    const model = 'model' in metadata ? metadata.model : undefined;
+    const preamble = 'preamble' in metadata ? metadata.preamble : undefined;
+    if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
+        throw new SPL2MarkdownError('frontmatter model must be a non-empty string', 2, 1);
+    }
+    if (preamble !== undefined && typeof preamble !== 'string') {
+        throw new SPL2MarkdownError('frontmatter preamble must be a string', 2, 1);
+    }
+
+    const masked = lines.map((l) => ' '.repeat(l.length));
+    const blocks: MarkdownBlock[] = [];
+    let i = endIdx + 1;
+    let inHtmlComment = false;
+
+    while (i < lines.length) {
+        const line = lines[i];
+
+        if (inHtmlComment) {
+            if (line.includes('-->')) inHtmlComment = false;
+            i++;
+            continue;
+        }
+        if (/^ {0,3}<!--/.test(line)) {
+            if (!line.includes('-->')) inHtmlComment = true;
+            i++;
+            continue;
+        }
+
+        // Top-level fenced code block (0-3 leading spaces)
+        const fenceMatch = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/.exec(line);
+        if (fenceMatch) {
+            const fenceMarker = fenceMatch[1];
+            const fenceChar = fenceMarker[0];
+            const info = fenceMatch[2].trim();
+            const openLine1 = i + 1;
+            const closingRe = new RegExp(`^ {0,3}${fenceChar}{${fenceMarker.length},}[ \\t]*$`);
+            let closeIdx = -1;
+            for (let j = i + 1; j < lines.length; j++) {
+                if (closingRe.test(lines[j])) {
+                    closeIdx = j;
+                    break;
+                }
+            }
+            if (info === 'spl2') {
+                if (closeIdx < 0) {
+                    throw new SPL2MarkdownError('unterminated SPL2 fence', openLine1, 1);
+                }
+                const innerLines = lines.slice(i + 1, closeIdx);
+                innerLines.forEach((txt, idx) => {
+                    masked[openLine1 + idx] = txt;
+                });
+                blocks.push({
+                    kind: 'spl2',
+                    text: innerLines.join('\n'),
+                    line: openLine1 + 1,
+                    endLine: closeIdx,
+                });
+            }
+            if (closeIdx < 0) {
+                break;
+            }
+            i = closeIdx + 1;
+            continue;
+        }
+
+        // Top-level blockquote (0-3 leading spaces followed by `>`)
+        if (/^ {0,3}>/.test(line)) {
+            const startIdx = i;
+            const bqRawLines: string[] = [];
+            let prevWasContent = true;
+            while (i < lines.length) {
+                const cur = lines[i];
+                if (/^ {0,3}>/.test(cur)) {
+                    bqRawLines.push(cur);
+                    prevWasContent = cur.replace(/^ {0,3}>[ \t]?/, '').trim().length > 0;
+                    i++;
+                    continue;
+                }
+                // Lazy continuation: non-empty line that is not a heading, fence, list item, or thematic break
+                if (
+                    prevWasContent &&
+                    cur.trim().length > 0 &&
+                    !/^ {0,3}(?:#|`{3,}|~{3,}|[-*+][ \t]|\d+\.[ \t]|<!--)/.test(cur)
+                ) {
+                    bqRawLines.push(cur);
+                    i++;
+                    continue;
+                }
+                break;
+            }
+            const strippedBq = bqRawLines.map((l) => l.replace(/^ {0,3}>[ \t]?/, ''));
+            blocks.push({
+                kind: 'natural',
+                text: strippedBq.join('\n'),
+                line: startIdx + 1,
+                endLine: startIdx + bqRawLines.length,
+            });
+            continue;
+        }
+
+        i++;
+    }
+
+    return {
+        version: metadata.version,
+        model: model as string | undefined,
+        preamble: preamble as string | undefined,
+        blocks,
+        code: masked.join('\n'),
+    };
 }
 
 function mapColToOrig(anchors: ColumnAnchor[] | undefined, genCol: number): number {
@@ -460,6 +785,12 @@ const FMT_RETURN_TYPES: Record<string, string> = {
     object: 'dict[str, Any]',
 };
 
+function findBlockAtLine(blocks: MarkdownBlock[] | undefined, line0: number): MarkdownBlock | undefined {
+    if (!blocks) return undefined;
+    const line1 = line0 + 1;
+    return blocks.find((b) => line1 >= b.line && line1 <= b.endLine);
+}
+
 export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
     const originalText = document.getText();
     const originalLines = originalText.split(/\r?\n/);
@@ -468,12 +799,106 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
     const symbols = new Map<string, SymbolDef>();
     const outLines: string[] = [];
 
+    const isMarkdown =
+        document.languageId === 'markdown' ||
+        document.uri.toLowerCase().endsWith('.md') ||
+        document.uri.toLowerCase().endsWith('.markdown');
+
+    let blocks: MarkdownBlock[] | undefined;
+    let sourceLines = originalLines;
+
+    if (isMarkdown) {
+        if (!isWorkflowMarkdown(originalText)) {
+            return {
+                uri: document.uri,
+                version: document.version,
+                originalText,
+                originalLines,
+                preprocessedPython: '',
+                virtualPythonWithStubs: '',
+                lineAnchors,
+                diagnostics: [],
+                symbols,
+                isMarkdown: true,
+                isWorkflow: false,
+                blocks: [],
+            };
+        }
+
+        try {
+            const extracted = extractMarkdown(originalText);
+            blocks = extracted.blocks;
+            sourceLines = extracted.code.split('\n');
+
+            // Validate each spl2 fence independently (e.g., dangling colon header without indented body or unexpected initial indent)
+            for (const block of blocks) {
+                if (block.kind !== 'spl2') continue;
+                const bLines = block.text.split('\n');
+                const nonEmpty = bLines
+                    .map((text, idx) => ({ text, line0: block.line - 1 + idx }))
+                    .filter((item) => item.text.trim() && !item.text.trim().startsWith('#'));
+                if (nonEmpty.length === 0) continue;
+
+                const first = nonEmpty[0];
+                const firstIndent = first.text.length - first.text.trimStart().length;
+                if (firstIndent > 0) {
+                    diagnostics.push({
+                        severity: DiagnosticSeverity.Error,
+                        range: Range.create(first.line0, 0, first.line0, firstIndent),
+                        message: 'SyntaxError: unexpected indent at start of SPL2 fence',
+                        source: 'spl2',
+                        code: 'syntax',
+                    });
+                }
+
+                const last = nonEmpty[nonEmpty.length - 1];
+                const lastCode = findCommentStart(last.text) >= 0 ? last.text.slice(0, findCommentStart(last.text)) : last.text;
+                if (/:\s*$/.test(lastCode.trim())) {
+                    diagnostics.push({
+                        severity: DiagnosticSeverity.Error,
+                        range: Range.create(last.line0, 0, last.line0, last.text.length),
+                        message: 'SyntaxError: expected an indented block before end of SPL2 fence',
+                        source: 'spl2',
+                        code: 'syntax',
+                    });
+                }
+            }
+        } catch (err) {
+            if (err instanceof SPL2MarkdownError) {
+                const errLine0 = Math.max(0, Math.min(originalLines.length - 1, err.line - 1));
+                const errCol0 = Math.max(0, err.col - 1);
+                diagnostics.push({
+                    severity: DiagnosticSeverity.Error,
+                    range: Range.create(errLine0, errCol0, errLine0, Math.max(errCol0 + 1, (originalLines[errLine0] ?? '').length)),
+                    message: err.message,
+                    source: 'spl2',
+                    code: 'markdown',
+                });
+                return {
+                    uri: document.uri,
+                    version: document.version,
+                    originalText,
+                    originalLines,
+                    preprocessedPython: '',
+                    virtualPythonWithStubs: '',
+                    lineAnchors,
+                    diagnostics,
+                    symbols,
+                    isMarkdown: true,
+                    isWorkflow: true,
+                    blocks: [],
+                };
+            }
+            throw err;
+        }
+    }
+
     // First pass: collect class definitions (including Pydantic models and their fields), functions, and bound variables
     let currentClass: SymbolDef | null = null;
     let currentClassIndent = -1;
 
-    for (let i = 0; i < originalLines.length; i++) {
-        const line = originalLines[i];
+    for (let i = 0; i < sourceLines.length; i++) {
+        const line = sourceLines[i];
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const indent = line.length - line.trimStart().length;
@@ -544,7 +969,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         }
 
         const assignMatch = /^(\s*)([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/.exec(line);
-        if (assignMatch) {
+        if (assignMatch && indent === 0) {
             const varName = assignMatch[2];
             const varCol = assignMatch[1].length;
             if (!symbols.has(varName)) {
@@ -559,9 +984,67 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         }
     }
 
+    // Also collect variables saved in Markdown blockquotes (e.g. `save to @var`, `-> @var`, `@var = ...`, with optional `@validate[Schema]`)
+    const blockquoteLinePy = new Map<number, string>();
+    if (blocks) {
+        for (const block of blocks) {
+            if (block.kind !== 'natural') continue;
+            const valMatch = /@validate\[([A-Za-z_]\w*)\]/.exec(block.text);
+            const schemaType = valMatch ? valMatch[1] : undefined;
+            const savePatterns = [
+                /\bsave\s+(?:it\s+)?to\s+@([A-Za-z_]\w*)/gi,
+                /->\s*@([A-Za-z_]\w*)/g,
+                /(?:^|\n)\s*@([A-Za-z_]\w*)\s*=/g,
+            ];
+            let assignedVar: string | undefined;
+            for (const pat of savePatterns) {
+                for (const m of block.text.matchAll(pat)) {
+                    const vName = m[1];
+                    assignedVar = vName;
+                    if (!symbols.has(vName)) {
+                        // Find exact line and column of `@vName` in originalLines within block
+                        let foundLine = block.line - 1;
+                        let foundCol = 0;
+                        for (let lIdx = block.line - 1; lIdx < block.endLine; lIdx++) {
+                            const rawL = originalLines[lIdx] ?? '';
+                            const atIdx = rawL.indexOf(`@${vName}`);
+                            if (atIdx >= 0) {
+                                foundLine = lIdx;
+                                foundCol = atIdx + 1;
+                                break;
+                            }
+                        }
+                        symbols.set(vName, {
+                            name: vName,
+                            kind: SymbolKind.Variable,
+                            line: foundLine,
+                            col: foundCol,
+                            endCol: foundCol + vName.length,
+                            inferredType: schemaType,
+                        });
+                    } else if (schemaType) {
+                        const existing = symbols.get(vName)!;
+                        if (!existing.inferredType) existing.inferredType = schemaType;
+                    }
+                }
+            }
+            const bqCall = `__spl2_natural__(${JSON.stringify(block.text)}, __lineno__=${block.line})`;
+            if (assignedVar) {
+                const typeAnnot = schemaType && symbols.has(schemaType) ? `: ${schemaType}` : ': _Any';
+                blockquoteLinePy.set(block.line - 1, `${assignedVar}${typeAnnot} = ${bqCall}`);
+            } else {
+                blockquoteLinePy.set(block.line - 1, bqCall);
+            }
+        }
+    }
+
     // Second pass: line-by-line token-stream rewrite + lint validation
-    for (let i = 0; i < originalLines.length; i++) {
-        const line = originalLines[i];
+    for (let i = 0; i < sourceLines.length; i++) {
+        if (blockquoteLinePy.has(i)) {
+            outLines.push(blockquoteLinePy.get(i)!);
+            continue;
+        }
+        const line = sourceLines[i];
         const commentIdx = findCommentStart(line);
         const codePart = commentIdx >= 0 ? line.slice(0, commentIdx) : line;
         const commentPart = commentIdx >= 0 ? line.slice(commentIdx) : '';
@@ -812,6 +1295,9 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         lineAnchors,
         diagnostics,
         symbols,
+        isMarkdown,
+        isWorkflow: isMarkdown ? true : undefined,
+        blocks,
     };
 }
 
@@ -837,6 +1323,35 @@ function findCommentStart(line: string): number {
 }
 
 export function getSPL2Completions(analysis: SPL2Analysis, position: Position): CompletionItem[] {
+    if (analysis.isMarkdown) {
+        if (!analysis.isWorkflow) return [];
+        const block = findBlockAtLine(analysis.blocks, position.line);
+        if (!block) return [];
+        if (block.kind === 'natural') {
+            const naturalItems: CompletionItem[] = [];
+            for (const sym of analysis.symbols.values()) {
+                naturalItems.push({
+                    label: sym.name,
+                    kind:
+                        sym.kind === SymbolKind.Class
+                            ? CompletionItemKind.Class
+                            : sym.kind === SymbolKind.Function
+                            ? CompletionItemKind.Function
+                            : CompletionItemKind.Variable,
+                    detail: sym.inferredType ? `${sym.name}: ${sym.inferredType}` : sym.name,
+                });
+            }
+            for (const marker of ['ENFORCE', 'FORBID', 'RESTRICT', 'validate', 'success', 'failure']) {
+                naturalItems.push({
+                    label: marker,
+                    kind: CompletionItemKind.Keyword,
+                    detail: 'SPL2 blockquote marker',
+                });
+            }
+            return naturalItems;
+        }
+    }
+
     const line = analysis.originalLines[position.line] ?? '';
     const beforeCursor = line.slice(0, position.character);
     const items: CompletionItem[] = [];
@@ -957,6 +1472,12 @@ export function getSPL2Completions(analysis: SPL2Analysis, position: Position): 
 }
 
 export function getSPL2Hover(analysis: SPL2Analysis, position: Position): Hover | null {
+    if (analysis.isMarkdown) {
+        if (!analysis.isWorkflow) return null;
+        const block = findBlockAtLine(analysis.blocks, position.line);
+        if (!block) return null;
+    }
+
     const line = analysis.originalLines[position.line] ?? '';
     const wordInfo = getWordAtPosition(line, position.character);
     if (!wordInfo) return null;
@@ -1011,6 +1532,12 @@ export function getSPL2Hover(analysis: SPL2Analysis, position: Position): Hover 
 }
 
 export function getSPL2Definition(analysis: SPL2Analysis, position: Position): Location | null {
+    if (analysis.isMarkdown) {
+        if (!analysis.isWorkflow) return null;
+        const block = findBlockAtLine(analysis.blocks, position.line);
+        if (!block) return null;
+    }
+
     const line = analysis.originalLines[position.line] ?? '';
     const wordInfo = getWordAtPosition(line, position.character);
     if (!wordInfo) return null;
@@ -1025,6 +1552,9 @@ export function getSPL2Definition(analysis: SPL2Analysis, position: Position): L
 }
 
 export function getSPL2DocumentSymbols(analysis: SPL2Analysis): SymbolInformation[] {
+    if (analysis.isMarkdown && !analysis.isWorkflow) {
+        return [];
+    }
     const result: SymbolInformation[] = [];
     for (const sym of analysis.symbols.values()) {
         result.push({

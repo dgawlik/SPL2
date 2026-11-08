@@ -125,4 +125,98 @@ describe('SPL2 VS Code Language Server & Preprocessor', () => {
         assert.ok(grammar.repository['spl2-command-with-modifiers']);
         assert.ok(grammar.repository['spl2-block-restrict']);
     });
+
+    it('keeps ordinary Markdown documents quiet and gates features on frontmatter', () => {
+        const plain = TextDocument.create(
+            'file:///workspace/README.md',
+            'markdown',
+            1,
+            '# Ordinary Markdown\n\n> @success\n\n```spl2\nask(bad_mod=1)\n```',
+        );
+        const plainAnalysis = analyzeSPL2Document(plain);
+        assert.deepEqual(plainAnalysis.diagnostics, []);
+        assert.deepEqual(getSPL2DocumentSymbols(plainAnalysis), []);
+        assert.deepEqual(getSPL2Completions(plainAnalysis, { line: 2, character: 3 }), []);
+
+        const invalidVer = TextDocument.create(
+            'file:///workspace/flow.md',
+            'markdown',
+            1,
+            '---\nextension: semantic-prompt-language\nversion: 99\n---\n\nText',
+        );
+        const invalidAnalysis = analyzeSPL2Document(invalidVer);
+        assert.equal(invalidAnalysis.diagnostics.length, 1);
+        assert.match(invalidAnalysis.diagnostics[0].message, /version: 1 or 2/);
+    });
+
+    it('preserves positions, Pydantic schema inference, and shared symbols across spl2 fences and blockquotes in Markdown', () => {
+        const mdContent = [
+            '---',
+            'extension: semantic-prompt-language',
+            'version: 2',
+            '---',
+            '',
+            '# Person Workflow',
+            '',
+            '```spl2',
+            'from pydantic import BaseModel',
+            '',
+            'class Person(BaseModel):',
+            '    first_name: str',
+            '    age: int',
+            '```',
+            '',
+            '> Generate a sample person @validate[Person] and save to @person',
+            '',
+            'Commentary paragraph outside fences.',
+            '',
+            '```spl2',
+            'person.',
+            'success person',
+            '```',
+        ].join('\n');
+
+        const doc = TextDocument.create('file:///workspace/person.md', 'markdown', 1, mdContent);
+        const analysis = analyzeSPL2Document(doc);
+        assert.deepEqual(analysis.diagnostics, []);
+
+        // Commentary outside fences/blockquotes has no completions
+        assert.deepEqual(getSPL2Completions(analysis, { line: 17, character: 5 }), []);
+
+        // Blockquote has @name completions, hover, and go-to-definition for Person
+        const bqCompletions = getSPL2Completions(analysis, { line: 15, character: 28 });
+        assert.ok(bqCompletions.some((c) => c.label === 'Person'));
+        const defPersonInBq = getSPL2Definition(analysis, { line: 15, character: 39 });
+        assert.ok(defPersonInBq);
+        assert.equal(defPersonInBq.range.start.line, 10);
+
+        // Second spl2 fence knows `person` has inferred type `Person` from `@validate[Person]` in the blockquote!
+        const fieldCompletions = getSPL2Completions(analysis, { line: 20, character: 7 });
+        const labels = fieldCompletions.map((c) => c.label);
+        assert.ok(labels.includes('first_name'));
+        assert.ok(labels.includes('age'));
+
+        // Validate that split blocks across fences are rejected
+        const splitDoc = TextDocument.create(
+            'file:///workspace/split.md',
+            'markdown',
+            1,
+            '---\nextension: semantic-prompt-language\nversion: 2\n---\n\n```spl2\nif True:\n```\n\n```spl2\n    pass\n```',
+        );
+        const splitAnalysis = analyzeSPL2Document(splitDoc);
+        assert.ok(splitAnalysis.diagnostics.length >= 1);
+    });
+
+    it('validates all shipped .spl2 and .md examples with zero diagnostics', () => {
+        const examplesDir = path.resolve(process.cwd(), '..', 'lang', 'examples');
+        const files = fs.readdirSync(examplesDir).filter((f) => f.endsWith('.spl2') || f.endsWith('.md'));
+        assert.ok(files.length >= 7);
+        for (const file of files) {
+            const fullPath = path.join(examplesDir, file);
+            const langId = file.endsWith('.md') ? 'markdown' : 'spl2';
+            const doc = TextDocument.create(`file:///${file}`, langId, 1, fs.readFileSync(fullPath, 'utf8'));
+            const analysis = analyzeSPL2Document(doc);
+            assert.deepEqual(analysis.diagnostics, [], `Unexpected diagnostics in ${file}`);
+        }
+    });
 });

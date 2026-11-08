@@ -77,6 +77,23 @@ class SPL2MetaPathFinder(importlib.abc.MetaPathFinder):
                     is_package=False,
                 )
 
+            # Check for runnable Markdown workflow `mod.md`
+            md_file = base / f"{tail_name}.md"
+            if md_file.is_file():
+                from .markdown import is_workflow_markdown
+
+                try:
+                    if is_workflow_markdown(md_file.read_text(encoding="utf-8")):
+                        loader = SPL2SourceLoader(fullname, str(md_file))
+                        return importlib.util.spec_from_loader(
+                            fullname,
+                            loader,
+                            origin=str(md_file),
+                            is_package=False,
+                        )
+                except Exception:
+                    pass
+
         return None
 
 

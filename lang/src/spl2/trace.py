@@ -140,9 +140,9 @@ class TraceManager:
                 )
                 return content_hash, occ, True, entry.get("result")
 
-            # For `agent`, check if there are partial `agent_step` entries from a crashed run
+            # For `agent` and `natural`, check if there are partial `agent_step` entries from a crashed run
             parent_key = f"{content_hash}:{occ}"
-            if kind == "agent" and not self._diverged and parent_key in self._agent_steps:
+            if kind in {"agent", "natural"} and not self._diverged and parent_key in self._agent_steps:
                 # Mark existing agent_step entries as matched so they aren't truncated while recovering
                 for idx, e in enumerate(self._entries):
                     if e.get("kind") == "agent_step" and e.get("parent_agent_key") == parent_key:

@@ -8,6 +8,7 @@ import builtins
 import contextvars
 import glob as glob_mod
 import json
+import keyword
 import logging
 import mimetypes
 import os
@@ -105,8 +106,26 @@ _cli_model_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _mcp_manager_var: contextvars.ContextVar[MCPManager | None] = contextvars.ContextVar(
     "spl2_mcp_manager", default=None
 )
+_md_active_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "spl2_md_active", default=False
+)
+_md_model_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "spl2_md_model", default=None
+)
+_md_preamble_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "spl2_md_preamble", default=None
+)
 _sync_client_override: Any = None
 _async_client_override: Any = None
+
+
+def configure_markdown_context(
+    *, model: str | None = None, preamble: str | None = None
+) -> None:
+    """Configure Markdown workflow frontmatter directives for the current execution context."""
+    _md_active_var.set(True)
+    _md_model_var.set(model)
+    _md_preamble_var.set(preamble)
 
 
 def set_openai_clients(sync_client: Any = None, async_client: Any = None) -> None:
@@ -137,12 +156,15 @@ def _get_async_client() -> Any:
 
 
 def resolve_model(per_call_model: str | None = None) -> str:
-    """Resolve model with precedence: CLI `--model` > per-call `model=` > env var (`OPENAI_MODEL`/`SPL2_MODEL`) > default."""
+    """Resolve model with precedence: CLI `--model` > per-call `model=` > frontmatter `model:` > env var (`OPENAI_MODEL`/`SPL2_MODEL`) > default."""
     cli_m = _cli_model_var.get()
     if cli_m:
         return cli_m
     if per_call_model:
         return per_call_model
+    md_m = _md_model_var.get()
+    if md_m:
+        return md_m
     env_m = os.environ.get("OPENAI_MODEL") or os.environ.get("SPL2_MODEL")
     if env_m:
         return env_m
@@ -276,13 +298,28 @@ def _build_system_instructions(
     fmt_mod: str = "text",
     schema_mod: Any = None,
 ) -> str:
-    """Assemble system instructions incorporating `len`, `fmt`/`schema`, `enforce`, and `forbid`."""
+    """Assemble system instructions incorporating Markdown preamble, `len`, `fmt`/`schema`, `enforce`, and `forbid`."""
     parts: list[str] = []
+    if _md_active_var.get():
+        from .markdown import NATURAL_PREAMBLE, RUNTIME_PREAMBLE
+
+        parts.append(RUNTIME_PREAMBLE)
+        md_preamble = _md_preamble_var.get()
+        if md_preamble and md_preamble.strip():
+            parts.append(md_preamble.strip())
+        if kind == "natural":
+            parts.append(NATURAL_PREAMBLE)
+
     if kind == "decide":
         parts.append(
             "You are a precise boolean evaluator. Evaluate whether the user's statement/predicate holds true given the provided evidence. "
             'Respond with a JSON object matching {"result": true} or {"result": false}.'
         )
+    elif kind == "natural":
+        if not _md_active_var.get():
+            from .markdown import NATURAL_PREAMBLE
+
+            parts.append(NATURAL_PREAMBLE)
     elif kind == "agent":
         parts.append(
             "You are an autonomous SPL2 agent. Use the available tools when needed to inspect files, run commands, fetch URLs, or search the web, then provide the final answer."
@@ -300,7 +337,7 @@ def _build_system_instructions(
             "You MUST return valid JSON strictly conforming to the following JSON Schema:\n"
             + json.dumps(schema_json, indent=2)
         )
-    elif kind != "decide":
+    elif kind not in {"decide", "natural"}:
         fmt_guidance = FMT_GUIDANCE_MAP.get(fmt_mod, FMT_GUIDANCE_MAP["text"])
         parts.append(fmt_guidance)
 
@@ -821,6 +858,9 @@ def _make_trace_payload(
     }
     if extra:
         payload["modifiers"].update(extra)
+    md_preamble = _md_preamble_var.get()
+    if md_preamble:
+        payload["modifiers"]["preamble"] = md_preamble
     return payload
 
 
@@ -1778,6 +1818,871 @@ async def agent_async(
     )
 
 
+class AttrDict(dict):
+    """Dict subclass supporting attribute read/write/delete access (`d.key` <-> `d['key']`)."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(f"'dict' object has no attribute {name!r}") from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        try:
+            del self[name]
+        except KeyError as exc:
+            raise AttributeError(f"'dict' object has no attribute {name!r}") from exc
+
+
+def _wrap_attr_dict(value: Any) -> Any:
+    """Recursively wrap dicts in `AttrDict` so both `d['key']` and `d.key` work in SPL2 code."""
+    if isinstance(value, BaseModel):
+        return value
+    if isinstance(value, dict):
+        return AttrDict({k: _wrap_attr_dict(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_wrap_attr_dict(v) for v in value]
+    return value
+
+
+def _validate_json_schema(value: Any, schema: Any, path: str = "$") -> None:
+    """Validate `value` against a JSON Schema draft-07 dictionary or boolean schema."""
+    if isinstance(schema, bool):
+        if not schema:
+            raise ValueError(f"Value rejected by false schema at {path}")
+        return
+    if not isinstance(schema, dict):
+        raise ValueError(f"Invalid JSON Schema at {path}: expected object or boolean")
+
+    for comb_key in ("allOf", "anyOf", "oneOf"):
+        if comb_key in schema:
+            subschemas = schema[comb_key]
+            if not isinstance(subschemas, list):
+                raise ValueError(f"Invalid '{comb_key}' at {path}")
+            if comb_key == "allOf":
+                for sub in subschemas:
+                    _validate_json_schema(value, sub, path)
+            elif comb_key == "anyOf":
+                matched = False
+                for sub in subschemas:
+                    try:
+                        _validate_json_schema(value, sub, path)
+                        matched = True
+                        break
+                    except ValueError:
+                        pass
+                if not matched:
+                    raise ValueError(f"Value at {path} did not match any schema in 'anyOf'")
+            elif comb_key == "oneOf":
+                matches = 0
+                for sub in subschemas:
+                    try:
+                        _validate_json_schema(value, sub, path)
+                        matches += 1
+                    except ValueError:
+                        pass
+                if matches != 1:
+                    raise ValueError(f"Value at {path} matched {matches} schemas in 'oneOf' (expected 1)")
+
+    if "const" in schema and value != schema["const"]:
+        raise ValueError(f"Expected constant {schema['const']!r} at {path}, got {value!r}")
+
+    if "enum" in schema:
+        enum_vals = schema["enum"]
+        if not isinstance(enum_vals, list) or value not in enum_vals:
+            raise ValueError(f"Value {value!r} at {path} is not in enum {enum_vals!r}")
+
+    expected_type = schema.get("type")
+    if expected_type is not None:
+        allowed_types = [expected_type] if isinstance(expected_type, str) else list(expected_type)
+
+        def _matches_type(val: Any, t_name: str) -> bool:
+            if t_name == "null":
+                return val is None
+            if t_name == "boolean":
+                return isinstance(val, bool)
+            if t_name == "integer":
+                return isinstance(val, int) and not isinstance(val, bool)
+            if t_name == "number":
+                return isinstance(val, (int, float)) and not isinstance(val, bool)
+            if t_name == "string":
+                return isinstance(val, str)
+            if t_name == "array":
+                return isinstance(val, list)
+            if t_name == "object":
+                return isinstance(val, dict)
+            return False
+
+        if not any(_matches_type(value, t) for t in allowed_types):
+            raise ValueError(
+                f"Expected type {expected_type!r} at {path}, got {type(value).__name__} ({value!r})"
+            )
+
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < int(schema["minLength"]):
+            raise ValueError(
+                f"String at {path} is shorter than minLength {schema['minLength']}"
+            )
+        if "maxLength" in schema and len(value) > int(schema["maxLength"]):
+            raise ValueError(
+                f"String at {path} exceeds maxLength {schema['maxLength']}"
+            )
+        if "pattern" in schema and re.search(str(schema["pattern"]), value) is None:
+            raise ValueError(
+                f"String {value!r} at {path} does not match pattern {schema['pattern']!r}"
+            )
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ValueError(f"Number {value} at {path} is less than minimum {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ValueError(f"Number {value} at {path} exceeds maximum {schema['maximum']}")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise ValueError(
+                f"Number {value} at {path} is not greater than exclusiveMinimum {schema['exclusiveMinimum']}"
+            )
+        if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+            raise ValueError(
+                f"Number {value} at {path} is not less than exclusiveMaximum {schema['exclusiveMaximum']}"
+            )
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < int(schema["minItems"]):
+            raise ValueError(f"Array at {path} has fewer than minItems ({schema['minItems']})")
+        if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+            raise ValueError(f"Array at {path} has more than maxItems ({schema['maxItems']})")
+        if "items" in schema and isinstance(schema["items"], (dict, bool)):
+            for idx, item in enumerate(value):
+                _validate_json_schema(item, schema["items"], f"{path}[{idx}]")
+
+    if isinstance(value, dict):
+        req = schema.get("required")
+        if isinstance(req, list):
+            for req_key in req:
+                if req_key not in value:
+                    raise ValueError(f"Missing required property {req_key!r} at {path}")
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        add_props = schema.get("additionalProperties", True)
+        for k, v in value.items():
+            if k in props:
+                _validate_json_schema(v, props[k], f"{path}.{k}")
+            elif add_props is False:
+                raise ValueError(f"Unexpected additional property {k!r} at {path}")
+            elif isinstance(add_props, (dict, bool)):
+                _validate_json_schema(v, add_props, f"{path}.{k}")
+
+
+NATURAL_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "load_variable",
+        "description": "Read a shared variable from the document scope, or read-only '$args'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Variable name or '$args'."},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "save_variable",
+        "description": "Create or update a shared variable in the document scope with a JSON value, optionally validating against a Pydantic model name or JSON Schema before saving.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Identifier of the variable to create or update.",
+                },
+                "value": {"description": "JSON value to store in the variable."},
+                "schema": {
+                    "description": "Optional schema class name in scope (e.g. 'Person', 'Review') or JSON Schema object.",
+                },
+            },
+            "required": ["name", "value"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "call_function",
+        "description": "Invoke an existing Python/SPL2 function in the shared scope with positional JSON arguments.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Function name in shared scope."},
+                "args": {
+                    "type": "array",
+                    "items": {},
+                    "description": "Positional arguments to pass to the function.",
+                },
+            },
+            "required": ["name", "args"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_env",
+        "description": "Read one environment variable. Missing variables return null.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Environment variable name."},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "restrict",
+        "description": "Narrow restrictions for the rest of this blockquote command, including function and MCP calls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["fs", "exec", "net", "mcp"],
+                    "description": "Restriction category.",
+                },
+                "value": {
+                    "description": "Allowed path, executable, host, or MCP pattern (string or list of strings).",
+                },
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "set_guidance",
+        "description": "Add enforce or forbid prompt guidance for the rest of this blockquote, including nested model calls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["enforce", "forbid"]},
+                "text": {"type": "string", "description": "Constraint text."},
+            },
+            "required": ["kind", "text"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "success",
+        "description": "End the whole document immediately with status='ok' and the given JSON data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "value": {"description": "Result payload for the document."},
+            },
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "fail",
+        "description": "End the whole document immediately with status='failure' and the given reason.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Failure reason."},
+            },
+            "required": ["reason"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+_IGNORED_SCOPE_NAMES = frozenset(
+    {
+        "BaseModel",
+        "Field",
+        "EmailStr",
+        "ValidationError",
+        "TypeAdapter",
+        "Optional",
+        "Any",
+        "List",
+        "Dict",
+        "Sequence",
+        "Tuple",
+        "Set",
+        "Union",
+        "Literal",
+        "Path",
+        "date",
+        "datetime",
+        "read_file",
+        "write_file",
+        "shell",
+        "web_fetch",
+        "web_search",
+    }
+)
+
+
+def _describe_value_for_natural(value: Any, seen: set[int] | None = None) -> Any:
+    """Describe a Python value in the shared scope safely (handling cycles, functions, and Pydantic schemas)."""
+    import inspect
+    import types
+
+    if seen is None:
+        seen = set()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, type) and issubclass(value, BaseModel) and value is not BaseModel:
+        return {
+            "__type__": "PydanticModel",
+            "name": value.__name__,
+            "schema": value.model_json_schema(),
+        }
+    if inspect.isfunction(value) or inspect.ismethod(value):
+        try:
+            sig = str(inspect.signature(value))
+        except Exception:
+            sig = "(...)"
+        return f"def {getattr(value, '__name__', 'fn')}{sig}"
+    if isinstance(value, types.ModuleType):
+        return f"<module {value.__name__}>"
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+
+    obj_id = id(value)
+    if obj_id in seen:
+        return "<circular reference>"
+
+    if isinstance(value, dict):
+        next_seen = seen | {obj_id}
+        return {
+            str(k): _describe_value_for_natural(v, next_seen) for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        next_seen = seen | {obj_id}
+        return [_describe_value_for_natural(v, next_seen) for v in value]
+    return str(value)
+
+
+def _describe_shared_bindings(scope: dict[str, Any]) -> dict[str, Any]:
+    """Build a JSON-serializable snapshot of user bindings in the shared document scope."""
+    import types
+
+    bindings: dict[str, Any] = {}
+    for name, val in scope.items():
+        if name.startswith("_") or name in _IGNORED_SCOPE_NAMES:
+            continue
+        if isinstance(val, types.ModuleType):
+            continue
+        bindings[name] = _describe_value_for_natural(val)
+    return bindings
+
+
+def _extract_inline_blockquote_directives(
+    text: str,
+) -> tuple[list[str], list[str], list[tuple[str, list[str]]], list[str]]:
+    """Extract inline `@ENFORCE`, `@FORBID`, `@RESTRICT`, and `@validate[Schema]` directives from a blockquote."""
+    enforces: list[str] = []
+    forbids: list[str] = []
+    restricts: list[tuple[str, list[str]]] = []
+    validate_schemas: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        m_enf = re.match(r"^@ENFORCE\s+(.+)$", stripped)
+        if m_enf:
+            enforces.append(m_enf.group(1).strip())
+            continue
+        m_forb = re.match(r"^@FORBID\s+(.+)$", stripped)
+        if m_forb:
+            forbids.append(m_forb.group(1).strip())
+            continue
+        m_rest = re.match(r"^@RESTRICT\s+(.+)$", stripped)
+        if m_rest:
+            rest_body = m_rest.group(1)
+            for clause in re.finditer(r"\b(fs|exec|net|mcp)\s*\[([^\]]*)\]", rest_body):
+                r_kind = clause.group(1)
+                raw_items = clause.group(2)
+                items: list[str] = []
+                for part in raw_items.split(","):
+                    cleaned = part.strip().strip("'").strip('"').strip()
+                    if cleaned:
+                        items.append(cleaned)
+                if items:
+                    restricts.append((r_kind, items))
+
+    for m_val in re.finditer(r"@validate\[([A-Za-z_]\w*)\]", text):
+        validate_schemas.append(m_val.group(1))
+
+    return enforces, forbids, restricts, validate_schemas
+
+
+def _validate_and_coerce_for_save(
+    value: Any,
+    schema_spec: Any,
+    scope: dict[str, Any],
+    default_schema_names: list[str],
+) -> tuple[Any, str | None]:
+    """Validate `value` against `schema_spec` (or `@validate[Schema]` in the blockquote) and return `(stored_value, schema_class_name)`."""
+    target_schema: Any = schema_spec
+    if target_schema is None and len(default_schema_names) == 1:
+        cand_name = default_schema_names[0]
+        if cand_name in scope:
+            target_schema = scope[cand_name]
+
+    if isinstance(target_schema, str):
+        if target_schema not in scope:
+            raise ValueError(f"Unknown schema '{target_schema}' in shared scope.")
+        target_schema = scope[target_schema]
+
+    if target_schema is None:
+        return _wrap_attr_dict(value), None
+
+    if isinstance(target_schema, type) and issubclass(target_schema, BaseModel):
+        validated_model = target_schema.model_validate(value)
+        return validated_model, target_schema.__name__
+
+    if isinstance(target_schema, (dict, bool)):
+        _validate_json_schema(value, target_schema)
+        return _wrap_attr_dict(value), None
+
+    validated_other = TypeAdapter(target_schema).validate_python(value)
+    return validated_other, None
+
+
+def natural_sync(
+    text: str,
+    scope_globals: dict[str, Any] | None = None,
+    scope_locals: dict[str, Any] | None = None,
+    *,
+    max_steps: int = 25,
+    __lineno__: int = 1,
+) -> Any:
+    """Execute a Markdown blockquote (`> ...`) as an agent step acting on the document's shared scope."""
+    import inspect
+    from .context import _enforce_var, _forbid_var, _restrict_var
+    from .tools import _notify_tool_event
+
+    if scope_globals is None:
+        frame = sys._getframe(1)
+        scope_globals = frame.f_globals
+        scope_locals = frame.f_locals
+
+    scope = scope_globals
+    prompt_str = str(text)
+    resolved_model = resolve_model(None)
+
+    inline_enforces, inline_forbids, inline_restricts, inline_schemas = (
+        _extract_inline_blockquote_directives(prompt_str)
+    )
+
+    saved_enforce = _enforce_var.get()
+    saved_forbid = _forbid_var.get()
+    saved_restrict = _restrict_var.get()
+
+    try:
+        if inline_enforces:
+            _enforce_var.set((*saved_enforce, *inline_enforces))
+        if inline_forbids:
+            _forbid_var.set((*saved_forbid, *inline_forbids))
+        if inline_restricts:
+            cur_pol = _restrict_var.get()
+            for r_kind, r_vals in inline_restricts:
+                cur_pol = cur_pol.intersect(**{r_kind: r_vals})
+            _restrict_var.set(cur_pol)
+
+        bindings_snapshot = _describe_shared_bindings(scope)
+        openai_tools, mcp_map, enabled_builtins = _prepare_agent_tools(None, None)
+        all_tools = [*NATURAL_TOOL_SCHEMAS, *openai_tools]
+
+        trace = get_active_trace()
+        trace_payload = _make_trace_payload(
+            kind="natural",
+            prompt_str=prompt_str,
+            model=resolved_model,
+            len_mod=None,
+            fmt="text",
+            schema=None,
+            tokens=None,
+            thinking=None,
+            files_meta=[],
+            extra={
+                "bindings": bindings_snapshot,
+                "tools": [t["name"] for t in NATURAL_TOOL_SCHEMAS] + enabled_builtins,
+                "mcp": sorted({spec.qualified_name for spec in mcp_map.values()}),
+            },
+        )
+        claimed_hash = ""
+        claimed_occ = 0
+        if trace is not None:
+            claimed_hash, claimed_occ, hit, cached = trace.claim_occurrence(
+                "natural", trace_payload
+            )
+            if hit and isinstance(cached, dict):
+                emit_tui_event(
+                    "prompt",
+                    {
+                        "kind": "blockquote (replay)",
+                        "model": resolved_model,
+                        "prompt": prompt_str,
+                    },
+                )
+                for var_name, var_entry in (cached.get("saved_variables") or {}).items():
+                    if isinstance(var_entry, dict) and "value" in var_entry:
+                        raw_v = var_entry["value"]
+                        schema_cls_name = var_entry.get("schema_class")
+                        if (
+                            schema_cls_name
+                            and schema_cls_name in scope
+                            and isinstance(scope[schema_cls_name], type)
+                            and issubclass(scope[schema_cls_name], BaseModel)
+                        ):
+                            scope[var_name] = scope[schema_cls_name].model_validate(raw_v)
+                        else:
+                            scope[var_name] = _wrap_attr_dict(raw_v)
+                    else:
+                        scope[var_name] = _wrap_attr_dict(var_entry)
+                terminated = cached.get("terminated")
+                if terminated == "success":
+                    trigger_success(cached.get("value"), lineno=__lineno__)
+                if terminated == "failure":
+                    trigger_failure(cached.get("reason", "Failure"), lineno=__lineno__)
+                emit_tui_event("response", {"text": cached.get("text", "Done")})
+                return None
+
+        parent_agent_key = f"{claimed_hash}:{claimed_occ}"
+        instructions = _build_system_instructions(kind="natural")
+        user_message = (
+            f"Shared bindings at command start:\n{json.dumps(bindings_snapshot, ensure_ascii=False)}\n\n"
+            f"Blockquote:\n{prompt_str}"
+        )
+        conversation: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+
+        logger.debug(
+            "SPL2 blockquote start [model=%s, line=%d]\n%s",
+            resolved_model,
+            __lineno__,
+            prompt_str,
+        )
+        emit_tui_event(
+            "prompt",
+            {"kind": "blockquote", "model": resolved_model, "prompt": prompt_str},
+        )
+
+        client = _get_sync_client()
+        saved_variables_record: dict[str, dict[str, Any]] = {}
+
+        def _execute_blockquote_tool(call_name: str, raw_arguments: str) -> Any:
+            try:
+                args = json.loads(raw_arguments) if raw_arguments else {}
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid JSON arguments for tool '{call_name}': {raw_arguments}"
+                ) from exc
+            if not isinstance(args, dict):
+                raise ValueError(f"Tool arguments for '{call_name}' must be a JSON object.")
+
+            if call_name == "load_variable":
+                var_name = str(args.get("name", ""))
+                _notify_tool_event("load_variable", {"name": var_name}, phase="start")
+                if var_name in {"$args", "args"} and var_name not in scope:
+                    res = list(sys.argv[1:])
+                elif var_name in scope:
+                    val = scope[var_name]
+                    if isinstance(val, type) and issubclass(val, BaseModel):
+                        res = val.model_json_schema()
+                    else:
+                        res = to_json_compatible(val)
+                else:
+                    raise NameError(f"name '{var_name}' is not defined in shared scope")
+                _notify_tool_event("load_variable", {"name": var_name}, res, phase="end")
+                return res
+
+            if call_name == "save_variable":
+                var_name = str(args.get("name", ""))
+                if not re.match(r"^[A-Za-z_]\w*$", var_name) or keyword.iskeyword(var_name):
+                    raise ValueError(f"Invalid variable name '{var_name}'.")
+                if var_name in scope and (
+                    inspect.isfunction(scope[var_name])
+                    or var_name in BUILTIN_TOOL_SCHEMAS
+                ):
+                    raise RuntimeError(
+                        f"Cannot replace function '{var_name}' with a variable."
+                    )
+                raw_val = args.get("value")
+                schema_arg = args.get("schema")
+                _notify_tool_event(
+                    "save_variable",
+                    {"name": var_name, "value": raw_val, "schema": schema_arg},
+                    phase="start",
+                )
+                stored_val, schema_cls_name = _validate_and_coerce_for_save(
+                    raw_val, schema_arg, scope, inline_schemas
+                )
+                scope[var_name] = stored_val
+                if scope_locals is not None and scope_locals is not scope:
+                    scope_locals[var_name] = stored_val
+                json_val = to_json_compatible(stored_val)
+                saved_variables_record[var_name] = {
+                    "value": json_val,
+                    "schema_class": schema_cls_name,
+                }
+                _notify_tool_event(
+                    "save_variable", {"name": var_name}, json_val, phase="end"
+                )
+                return json_val
+
+            if call_name == "call_function":
+                fn_name = str(args.get("name", ""))
+                fn_args = args.get("args", [])
+                if not isinstance(fn_args, list):
+                    raise ValueError("'call_function' arguments 'args' must be a list.")
+                _notify_tool_event(
+                    "call_function", {"name": fn_name, "args": fn_args}, phase="start"
+                )
+                if fn_name in scope and callable(scope[fn_name]):
+                    fn_obj = scope[fn_name]
+                elif fn_name in enabled_builtins:
+                    from . import tools as _tools_mod
+
+                    fn_obj = getattr(_tools_mod, fn_name)
+                else:
+                    raise NameError(f"Function '{fn_name}' is not defined or not callable.")
+                res = fn_obj(*fn_args)
+                if asyncio.iscoroutine(res):
+                    res = asyncio.run(res)
+                # Record any variables mutated in scope by the called function
+                for k, v in scope.items():
+                    if not k.startswith("_") and k not in _IGNORED_SCOPE_NAMES and not callable(v):
+                        if k not in bindings_snapshot or _describe_value_for_natural(v) != bindings_snapshot.get(k):
+                            saved_variables_record[k] = {
+                                "value": to_json_compatible(v),
+                                "schema_class": type(v).__name__ if isinstance(v, BaseModel) else None,
+                            }
+                json_res = to_json_compatible(res)
+                _notify_tool_event(
+                    "call_function", {"name": fn_name}, json_res, phase="end"
+                )
+                return json_res
+
+            if call_name == "get_env":
+                env_name = str(args.get("name", ""))
+                _notify_tool_event("get_env", {"name": env_name}, phase="start")
+                val = os.environ.get(env_name)
+                _notify_tool_event("get_env", {"name": env_name}, val, phase="end")
+                return val
+
+            if call_name == "restrict":
+                r_kind = str(args.get("kind", ""))
+                r_val = args.get("value")
+                if r_kind not in {"fs", "exec", "net", "mcp"}:
+                    raise ValueError(f"Invalid restriction kind '{r_kind}'.")
+                _notify_tool_event(
+                    "restrict", {"kind": r_kind, "value": r_val}, phase="start"
+                )
+                new_pol = _restrict_var.get().intersect(**{r_kind: r_val})
+                _restrict_var.set(new_pol)
+                _notify_tool_event(
+                    "restrict", {"kind": r_kind, "value": r_val}, None, phase="end"
+                )
+                return None
+
+            if call_name == "set_guidance":
+                g_kind = str(args.get("kind", ""))
+                g_text = str(args.get("text", ""))
+                if g_kind == "enforce":
+                    _enforce_var.set((*_enforce_var.get(), g_text))
+                elif g_kind == "forbid":
+                    _forbid_var.set((*_forbid_var.get(), g_text))
+                else:
+                    raise ValueError(f"Invalid guidance kind '{g_kind}'.")
+                _notify_tool_event(
+                    "set_guidance", {"kind": g_kind, "text": g_text}, None, phase="end"
+                )
+                return None
+
+            if call_name == "success":
+                s_val = to_json_compatible(args.get("value"))
+                if trace is not None:
+                    trace.store_claimed(
+                        "natural",
+                        claimed_hash,
+                        claimed_occ,
+                        {
+                            "terminated": "success",
+                            "value": s_val,
+                            "saved_variables": saved_variables_record,
+                        },
+                    )
+                trigger_success(s_val, lineno=__lineno__)
+
+            if call_name in {"fail", "failure"}:
+                f_reason = str(args.get("reason", "Failure"))
+                if trace is not None:
+                    trace.store_claimed(
+                        "natural",
+                        claimed_hash,
+                        claimed_occ,
+                        {
+                            "terminated": "failure",
+                            "reason": f_reason,
+                            "saved_variables": saved_variables_record,
+                        },
+                    )
+                trigger_failure(f_reason, lineno=__lineno__)
+
+            return _dispatch_agent_tool_call(
+                call_name, raw_arguments, enabled_builtins, mcp_map
+            )
+
+        with agent_loop_context():
+            for step_idx in range(max_steps):
+                emit_tui_event("step", {"step": step_idx + 1, "max_steps": max_steps})
+                instructions = _build_system_instructions(kind="natural")
+                step_payload = {
+                    "parent_agent_key": parent_agent_key,
+                    "step_index": step_idx,
+                    "conversation": to_json_compatible(conversation),
+                }
+
+                step_hit = False
+                if trace is not None:
+                    step_hit, cached_step = trace.lookup_agent_step(
+                        parent_agent_key, step_idx, step_payload
+                    )
+                    if step_hit and isinstance(cached_step, dict):
+                        tool_calls = cached_step.get("tool_calls", [])
+                        tool_outputs = cached_step.get("tool_outputs", [])
+                        for tc, tout in zip(tool_calls, tool_outputs):
+                            conversation.append(
+                                {
+                                    "type": "function_call",
+                                    "call_id": tc["call_id"],
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                }
+                            )
+                            conversation.append(
+                                {
+                                    "type": "function_call_output",
+                                    "call_id": tc["call_id"],
+                                    "output": tout["output"],
+                                }
+                            )
+                        continue
+
+                try:
+                    resp = _invoke_responses_sync(
+                        client,
+                        model=resolved_model,
+                        instructions=instructions,
+                        input_payload=conversation,
+                        tokens=None,
+                        thinking=None,
+                        schema=None,
+                        tools=all_tools,
+                        retries=0,
+                    )
+                except BaseException as exc:
+                    raise SPL2RuntimeError(
+                        f"LLM call failed in blockquote at line {__lineno__}: {exc}",
+                        lineno=__lineno__,
+                    ) from exc
+
+                raw_text, reasoning_list, tool_calls, _ = _extract_response_data(resp)
+                _emit_reasoning_if_needed(resp, reasoning_list)
+
+                if tool_calls:
+                    tool_outputs: list[dict[str, str]] = []
+                    for tc in tool_calls:
+                        try:
+                            tool_res = _execute_blockquote_tool(
+                                tc["name"], tc["arguments"]
+                            )
+                        except (SPL2SuccessException, SPL2FailureException):
+                            raise
+                        except BaseException as tool_exc:
+                            raise SPL2RuntimeError(
+                                f"Blockquote tool '{tc['name']}' failed: {tool_exc}",
+                                lineno=__lineno__,
+                            ) from tool_exc
+
+                        out_str = (
+                            tool_res
+                            if isinstance(tool_res, str)
+                            else json.dumps(
+                                to_json_compatible(tool_res), ensure_ascii=False
+                            )
+                        )
+                        tool_outputs.append(
+                            {"call_id": tc["call_id"], "output": out_str}
+                        )
+
+                    if trace is not None:
+                        trace.record_agent_step(
+                            parent_agent_key,
+                            step_idx,
+                            step_payload,
+                            {
+                                "raw_text": raw_text,
+                                "tool_calls": tool_calls,
+                                "tool_outputs": tool_outputs,
+                            },
+                        )
+
+                    for tc, tout in zip(tool_calls, tool_outputs):
+                        conversation.append(
+                            {
+                                "type": "function_call",
+                                "call_id": tc["call_id"],
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                            }
+                        )
+                        conversation.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": tc["call_id"],
+                                "output": tout["output"],
+                            }
+                        )
+                    continue
+
+                emit_tui_event("response", {"text": raw_text})
+                if trace is not None:
+                    trace.store_claimed(
+                        "natural",
+                        claimed_hash,
+                        claimed_occ,
+                        {
+                            "terminated": None,
+                            "text": raw_text,
+                            "saved_variables": saved_variables_record,
+                        },
+                    )
+                return None
+
+        raise SPL2RuntimeError(
+            f"Blockquote agent exceeded max_steps ({max_steps}) without completing.",
+            lineno=__lineno__,
+        )
+    finally:
+        _enforce_var.set(saved_enforce)
+        _forbid_var.set(saved_forbid)
+        _restrict_var.set(saved_restrict)
+
+
 # Helpers for `--emit-py` transpiled Python code where `__spl2_prompt__` is passed as keyword arg
 def _emit_py_ask(*, __spl2_prompt__: Any = "", **kwargs: Any) -> Any:
     return ask_sync(__spl2_prompt__, **kwargs)
@@ -1801,6 +2706,11 @@ def _emit_py_decide(*, __spl2_prompt__: Any = "", **kwargs: Any) -> bool:
 
 async def _emit_py_async_decide(*, __spl2_prompt__: Any = "", **kwargs: Any) -> bool:
     return await decide_async(__spl2_prompt__, **kwargs)
+
+
+def _emit_py_natural(text: str, *, __lineno__: int = 1) -> Any:
+    frame = sys._getframe(1)
+    return natural_sync(text, frame.f_globals, frame.f_locals, __lineno__=__lineno__)
 
 
 @contextmanager
@@ -1877,6 +2787,9 @@ def run_spl2_source(
 
     model_token = _cli_model_var.set(model)
     mcp_token = _mcp_manager_var.set(mcp_mgr)
+    md_active_token = _md_active_var.set(False)
+    md_model_token = _md_model_var.set(None)
+    md_preamble_token = _md_preamble_var.set(None)
 
     import types
 
@@ -1928,6 +2841,9 @@ def run_spl2_source(
         mcp_mgr.close_all()
         _cli_model_var.reset(model_token)
         _mcp_manager_var.reset(mcp_token)
+        _md_active_var.reset(md_active_token)
+        _md_model_var.reset(md_model_token)
+        _md_preamble_var.reset(md_preamble_token)
         if saved_main_mod is not None:
             sys.modules["__main__"] = saved_main_mod
         sys.argv = saved_argv

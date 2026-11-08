@@ -1,0 +1,27 @@
+{
+  "SPL2 Markdown Workflow": {
+    "prefix": ["spl2workflow", "splworkflow"],
+    "body": [
+      "---",
+      "extension: 'semantic-prompt-language'",
+      "version: 1",
+      "model: 'gpt-4.1'",
+      "---",
+      "",
+      "```spl2",
+      "from pydantic import BaseModel",
+      "",
+      "class ${1:Result}(BaseModel):",
+      "    ${2:summary}: str",
+      "```",
+      "",
+      "> ${3:Generate a summary} @validate[${1:Result}] and save to @${4:result}",
+      "",
+      "```spl2",
+      "success ${4:result}",
+      "```",
+      "$0"
+    ],
+    "description": "An executable SPL2 Markdown workflow with shared spl2 code blocks and natural-language blockquotes"
+  }
+}

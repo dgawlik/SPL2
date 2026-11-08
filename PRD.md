@@ -20,8 +20,12 @@ The runtime is distributed as a `pip` package that installs the `spl2` CLI execu
      6. Reject empty `restrict()` calls with no arguments or missing prompt/target expressions after `ask`, `agent`, `decide`, `enforce`, or `forbid`.
 3. **Bytecode Compilation**: After AST transformations, the result is compiled via `compile()` into plain Python bytecode.
 4. **Contextual (Soft) Keywords**: `ask`, `agent`, `decide`, `enforce`, `forbid`, `restrict`, `success`, and `failure` are contextual keywords (like Python's `match`/`case`/`type`). They are only parsed as SPL2 constructs when they appear in their designated syntactic positions, remaining valid variable, parameter, and attribute names everywhere else in `.spl2` files.
-5. **CLI & Developer Flags**:
-   * `spl2 [options] <script.spl2> [script_args...]` executes `<script.spl2>` and passes `[script_args...]` into standard `sys.argv`.
+5. **Runnable Markdown Files (`.md`) & `.spl2` Scripts**:
+   * SPL2 supports both standalone `.spl2` scripts and runnable Markdown workflow files (`.md`) that opt in via YAML frontmatter (`extension: semantic-prompt-language`, `version: 1` or `2`, optional `model`, optional `preamble`).
+   * In a runnable Markdown workflow, fenced ```` ```spl2 ```` code blocks and top-level `> ...` natural-language blockquotes execute in document order in a single shared module scope; all other prose and non-`spl2` fences are ignored commentary.
+   * Top-level `> ...` blockquotes run as natural-language agent steps with shared-scope tools (`load_variable`, `save_variable` with `@validate[Schema]` Pydantic/JSON Schema validation, `call_function`, `get_env`, `restrict`, `set_guidance`, `success`, `fail`) alongside the 5 built-in tools and MCP servers.
+6. **CLI & Developer Flags**:
+   * `spl2 [options] <script.spl2|workflow.md> [script_args...]` executes `<script.spl2>` or `<workflow.md>` and passes `[script_args...]` into standard `sys.argv`.
    * `--check`: Runs the static lint and AST validation stage without executing the script or requiring an API key (exits `0` on valid syntax/modifiers, `1` on lint errors).
    * `--emit-py`: Outputs the transpiled Python source code (preserving original line numbers) for debugging and tooling inspection.
 
