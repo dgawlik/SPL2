@@ -92,7 +92,10 @@
           },
           "endCaptures": {
             "0": { "name": "punctuation.definition.string.end.spl2" }
-          }
+          },
+          "patterns": [
+            { "include": "#python-string-escape" }
+          ]
         },
         {
           "name": "string.quoted.single.spl2",
@@ -104,7 +107,10 @@
           },
           "endCaptures": {
             "1": { "name": "punctuation.definition.string.end.spl2" }
-          }
+          },
+          "patterns": [
+            { "include": "#python-string-escape" }
+          ]
         },
         {
           "name": "keyword.control.flow.python.spl2",
@@ -123,6 +129,10 @@
           "match": "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
         }
       ]
+    },
+    "python-string-escape": {
+      "name": "constant.character.escape.spl2",
+      "match": "\\\\."
     }
   }
 }

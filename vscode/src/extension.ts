@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { LanguageClient, TransportKind } from 'vscode-languageclient/node';
 import { TextDocument as LspTextDocument } from 'vscode-languageserver-textdocument';
 import {
     analyzeSPL2Document,
+    getSPL2Completions,
     isWorkflowMarkdown,
     origToVirtualPosition,
     virtualToOrigRange,
@@ -15,6 +18,25 @@ const execFileAsync = promisify(execFile);
 const VIRTUAL_SCHEME = 'spl2-virtual-py';
 
 let client: LanguageClient | undefined;
+
+function resolvePythonPath(docUri: vscode.Uri): string {
+    const configured = vscode.workspace.getConfiguration('spl2', docUri).get<string>('pythonPath', 'python');
+    if (configured && configured !== 'python') return configured;
+    const wsFolder = vscode.workspace.getWorkspaceFolder(docUri)?.uri.fsPath;
+    const searchDirs = [
+        ...(wsFolder ? [wsFolder, path.dirname(wsFolder)] : []),
+        path.dirname(docUri.fsPath),
+        path.resolve(path.dirname(docUri.fsPath), '..'),
+        path.resolve(path.dirname(docUri.fsPath), '..', '..'),
+    ];
+    for (const dir of searchDirs) {
+        const winVenv = path.join(dir, '.venv', 'Scripts', 'python.exe');
+        if (fs.existsSync(winVenv)) return winVenv;
+        const unixVenv = path.join(dir, '.venv', 'bin', 'python');
+        if (fs.existsSync(unixVenv)) return unixVenv;
+    }
+    return configured || 'python';
+}
 
 function isRunnableSPL2Document(doc: vscode.TextDocument): boolean {
     if (doc.languageId === 'spl2') return true;
@@ -78,12 +100,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     const vUri = virtualProvider.toVirtualUri(document.uri);
                     const vPos = origToVirtualPosition(analysis, position);
                     try {
+                        await vscode.workspace.openTextDocument(vUri);
                         const list = await vscode.commands.executeCommand<vscode.CompletionList>(
                             'vscode.executeCompletionItemProvider',
                             vUri,
                             new vscode.Position(vPos.line, vPos.character),
                         );
-                        return list?.items ?? [];
+                        if (!list?.items) return [];
+                        const lspLabels = new Set(
+                            getSPL2Completions(analysis, {
+                                line: position.line,
+                                character: position.character,
+                            }).map((it) => it.label),
+                        );
+                        return list.items.filter((item) => {
+                            const label = typeof item.label === 'string' ? item.label : item.label.label;
+                            if (label.startsWith('__spl2_') || ['_Any', '_TypeVar', '_Literal', '_overload', '_ACM', '_T'].includes(label)) {
+                                return false;
+                            }
+                            return !lspLabels.has(label);
+                        });
                     } catch {
                         return [];
                     }
@@ -137,7 +173,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const editor = vscode.window.activeTextEditor;
             if (!editor || !isRunnableSPL2Document(editor.document)) return;
             await editor.document.save();
-            const pythonPath = vscode.workspace.getConfiguration('spl2').get<string>('pythonPath', 'python');
+            const pythonPath = resolvePythonPath(editor.document.uri);
             try {
                 await execFileAsync(pythonPath, ['-m', 'spl2.cli', '--check', editor.document.fileName]);
                 void vscode.window.showInformationMessage('SPL2 check passed with no errors.');
@@ -162,10 +198,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const editor = vscode.window.activeTextEditor;
             if (!editor || !isRunnableSPL2Document(editor.document)) return;
             await editor.document.save();
-            const pythonPath = vscode.workspace.getConfiguration('spl2').get<string>('pythonPath', 'python');
+            const pythonPath = resolvePythonPath(editor.document.uri);
             const terminal = vscode.window.createTerminal('SPL2 Run');
             terminal.show();
-            terminal.sendText(`${pythonPath} -m spl2.cli "${editor.document.fileName}"`);
+            terminal.sendText(`"${pythonPath}" -m spl2.cli "${editor.document.fileName}"`);
         }),
     );
 

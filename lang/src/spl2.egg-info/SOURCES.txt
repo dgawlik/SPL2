@@ -5,6 +5,7 @@ src/spl2/cli.py
 src/spl2/compiler.py
 src/spl2/context.py
 src/spl2/importer.py
+src/spl2/markdown.py
 src/spl2/mcp.py
 src/spl2/runtime.py
 src/spl2/tools.py

@@ -231,6 +231,33 @@ success {'val': val, 'attr': h.ask}
 # ---------------------------------------------------------------------------
 
 
+def test_mock_conversation_example_stops_after_three_rounds():
+    def handler(kwargs):
+        assert len(client.calls) <= 6, "Conversation restarted an exhausted generator"
+        return make_mock_response(f"message-{len(client.calls)}")
+
+    client = FakeOpenAIClient(handler)
+    set_openai_clients(sync_client=client)
+    example = Path(__file__).parents[1] / "examples" / "mock_convesation.spl2"
+    source = example.read_text(encoding="utf-8")
+    env, exit_code = run_spl2_source(
+        source + "\nsuccess [(message.sender, message.content) for message in conv.messages]\n",
+        filename=str(example),
+    )
+
+    assert exit_code == 0, env
+    assert env["data"] == [
+        [sender, f"message-{idx}"]
+        for idx, sender in enumerate(["Alice", "Bob"] * 3, start=1)
+    ]
+    assert len(client.calls) == 6
+    for idx, call in enumerate(client.calls):
+        prompt = call["input"]
+        for previous in range(1, idx + 1):
+            assert f"message-{previous}" in prompt
+        assert f"message-{idx + 1}" not in prompt
+
+
 def test_ask_formats_and_pydantic_schema():
     class Person(BaseModel):
         first_name: str = Field(..., min_length=1, max_length=50)
@@ -1117,5 +1144,3 @@ def test_cli_check_and_emit_py_on_markdown_and_all_examples(capsys):
         assert cli_main(["--emit-py", str(f)]) == 0
         out_py, _ = capsys.readouterr()
         assert "from spl2.runtime import" in out_py
-
-

@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Registry, parseRawGrammar, INITIAL } from 'vscode-textmate';
+import { loadWASM, OnigScanner, OnigString } from 'vscode-oniguruma';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import {
     analyzeSPL2Document,
@@ -126,6 +128,173 @@ describe('SPL2 VS Code Language Server & Preprocessor', () => {
         assert.ok(grammar.repository['spl2-block-restrict']);
     });
 
+    it('preserves multiline prompts and their closing call delimiters', () => {
+        for (const quote of ["'''", '"""']) {
+            for (const keyword of ['ask', 'agent', 'decide']) {
+                for (const modifiers of ['', "(len='paragraph')"]) {
+                    const code = [
+                        "name = 'Alice'",
+                        `result = ${keyword}${modifiers} f${quote}Hello {name}.`,
+                        'success is text here # not a comment',
+                        `Goodbye {name}.${quote}`,
+                        'print(result)',
+                    ].join('\n');
+                    const analysis = analyzeSPL2Document(makeDoc(code));
+                    assert.deepEqual(analysis.diagnostics, [], code);
+                    const expected = [
+                        "name = 'Alice'",
+                        `result = __spl2_${keyword}__(${modifiers ? "len='paragraph', " : ''}__spl2_prompt__=f${quote}Hello {name}.`,
+                        'success is text here # not a comment',
+                        `Goodbye {name}.${quote})`,
+                        'print(result)',
+                    ].join('\n');
+                    assert.equal(analysis.preprocessedPython, expected);
+                    for (const pos of [{ line: 1, character: code.split('\n')[1].indexOf('{name}') }, { line: 3, character: 10 }]) {
+                        assert.deepEqual(virtualToOrigPosition(analysis, origToVirtualPosition(analysis, pos)), pos);
+                    }
+                }
+            }
+        }
+    });
+
+    it('does not rewrite or collect definitions from multiline string contents', () => {
+        const code = [
+            'text = """Literal code:',
+            'class Fake:',
+            "    field: str",
+            'fake_assignment = 1',
+            'import fake_module',
+            "ask(bad_mod=1) 'not a call'",
+            'failure "not termination"',
+            '"""',
+            'print(text)',
+        ].join('\n');
+        const analysis = analyzeSPL2Document(makeDoc(code));
+        assert.deepEqual(analysis.diagnostics, []);
+        assert.equal(analysis.preprocessedPython, code);
+        assert.ok(!analysis.symbols.has('Fake'));
+        assert.ok(!analysis.symbols.has('fake_assignment'));
+        assert.ok(!analysis.symbols.has('fake_module'));
+        const missing = analyzeSPL2Document(makeDoc(code + '\nprint(fake_assignment)'));
+        assert.equal(missing.diagnostics.length, 1);
+        assert.equal(missing.diagnostics[0].code, 'undefined-name');
+        assert.match(missing.diagnostics[0].message, /fake_assignment/);
+    });
+
+    it('handles multiline constraints, termination, conditionals, and Markdown fences', () => {
+        const cases = [
+            ['enforce', 'with __spl2_enforce__('],
+            ['forbid', 'with __spl2_forbid__('],
+            ['success', '__spl2_success__('],
+            ['failure', '__spl2_failure__('],
+            ['if decide', 'if __spl2_decide__(__spl2_prompt__='],
+        ];
+        for (const [keyword, replacement] of cases) {
+            const isBlock = ['enforce', 'forbid', 'if decide'].includes(keyword);
+            const code = [
+                `${keyword} """First line`,
+                '',
+                `Last line"""${isBlock ? ':' : ''} # comment`,
+                ...(isBlock ? ['    pass'] : []),
+            ].join('\n');
+            const expected = code.replace(keyword + ' ', replacement).replace('""" #', '""")#').replace('""": #', '"""):#');
+            for (const markdown of [false, true]) {
+                const prefix = markdown ? '---\nextension: semantic-prompt-language\nversion: 2\n---\n```spl2\n' : '';
+                const text = prefix + code + (markdown ? '\n```' : '');
+                const doc = TextDocument.create(
+                    markdown ? 'file:///workspace/multiline.md' : 'file:///workspace/multiline.spl2',
+                    markdown ? 'markdown' : 'spl2',
+                    1,
+                    text.replace(/\n/g, '\r\n'),
+                );
+                const analysis = analyzeSPL2Document(doc);
+                assert.deepEqual(analysis.diagnostics, [], text);
+                const offset = markdown ? 5 : 0;
+                assert.equal(analysis.preprocessedPython.split('\n').slice(offset, offset + code.split('\n').length).join('\n'), expected);
+            }
+        }
+    });
+
+    it('reports real errors inside multiline f-string interpolations on the original line', () => {
+        const analysis = analyzeSPL2Document(makeDoc([
+            'result = ask """Plain text {not_a_variable}"""',
+            'result = ask f"""First line',
+            '{missing_name}',
+            'Last line"""',
+        ].join('\n')));
+        assert.equal(analysis.diagnostics.length, 1);
+        assert.equal(analysis.diagnostics[0].code, 'undefined-name');
+        assert.match(analysis.diagnostics[0].message, /missing_name/);
+        assert.deepEqual(analysis.diagnostics[0].range, {
+            start: { line: 2, character: 1 },
+            end: { line: 2, character: 13 },
+        });
+    });
+
+    it('validates f-string expressions spanning lines and preserves error positions', () => {
+        const valid = [
+            'name = "Alice"',
+            'result = ask f"""Literal {{braces}}',
+            '{(',
+            '    name.upper()',
+            ')} and {"quoted text"}',
+            'Last line"""',
+        ].join('\n');
+        assert.deepEqual(analyzeSPL2Document(makeDoc(valid)).diagnostics, []);
+
+        for (const [text, line, character, message] of [
+            ['result = ask f"""First line\n{(\nmissing_name\n)}\nLast line"""', 2, 0, /missing_name/],
+            ['result = ask f"""First line\n{\nLast line"""', 1, 0, /expecting '}'/],
+            ['result = ask f"""First line\n{}\nLast line"""', 1, 0, /empty expression/],
+            ['result = ask f"""First line\n}\nLast line"""', 1, 0, /single '}'/],
+        ] as const) {
+            const analysis = analyzeSPL2Document(makeDoc(text));
+            assert.equal(analysis.diagnostics.length, 1, text);
+            assert.match(analysis.diagnostics[0].message, message);
+            assert.deepEqual(analysis.diagnostics[0].range.start, { line, character });
+        }
+    });
+
+    it('highlights multiline strings without ending at escaped triple quotes', async () => {
+        const wasm = fs.readFileSync(path.resolve(process.cwd(), 'node_modules', 'vscode-oniguruma', 'release', 'onig.wasm'));
+        await loadWASM(new Uint8Array(wasm).buffer);
+        const grammarPath = path.resolve(process.cwd(), 'syntaxes', 'spl2.tmLanguage.json');
+        const registry = new Registry({
+            onigLib: Promise.resolve({
+                createOnigScanner: (patterns) => new OnigScanner(patterns),
+                createOnigString: (text) => new OnigString(text),
+            }),
+            loadGrammar: async (scope) => scope === 'source.spl2'
+                ? parseRawGrammar(fs.readFileSync(grammarPath, 'utf8'), grammarPath)
+                : null,
+        });
+        try {
+            const grammar = await registry.loadGrammar('source.spl2');
+            assert.ok(grammar);
+            for (const quote of ["'''", '"""']) {
+                let state = INITIAL;
+                for (const line of [
+                    `result = ask(len='paragraph') f${quote}Hello`,
+                    `escaped \\${quote} still inside the string`,
+                    'ask(bad_mod=1) is literal text # not a comment',
+                    `Goodbye${quote}`,
+                    'print(result)',
+                ]) {
+                    const result = grammar.tokenizeLine(line, state);
+                    state = result.ruleStack;
+                    if (line.startsWith('escaped') || line.startsWith('ask(')) {
+                        assert.ok(result.tokens.every((token) => token.scopes.includes('string.quoted.triple.spl2')), line);
+                    } else if (line.startsWith('print')) {
+                        assert.ok(result.tokens.some((token) => token.scopes.includes('support.function.builtin.spl2')));
+                        assert.ok(result.tokens.every((token) => !token.scopes.includes('string.quoted.triple.spl2')));
+                    }
+                }
+            }
+        } finally {
+            registry.dispose();
+        }
+    });
+
     it('keeps ordinary Markdown documents quiet and gates features on frontmatter', () => {
         const plain = TextDocument.create(
             'file:///workspace/README.md',
@@ -171,7 +340,7 @@ describe('SPL2 VS Code Language Server & Preprocessor', () => {
             'Commentary paragraph outside fences.',
             '',
             '```spl2',
-            'person.',
+            'person.first_name',
             'success person',
             '```',
         ].join('\n');
@@ -195,6 +364,7 @@ describe('SPL2 VS Code Language Server & Preprocessor', () => {
         const labels = fieldCompletions.map((c) => c.label);
         assert.ok(labels.includes('first_name'));
         assert.ok(labels.includes('age'));
+        assert.ok(labels.includes('model_dump'));
 
         // Validate that split blocks across fences are rejected
         const splitDoc = TextDocument.create(
@@ -207,11 +377,95 @@ describe('SPL2 VS Code Language Server & Preprocessor', () => {
         assert.ok(splitAnalysis.diagnostics.length >= 1);
     });
 
+    it('provides Python syntax, built-in, module, and method completions and catches Python syntax & undefined-name errors', () => {
+        // 1. Markdown workflow with incomplete `pri` inside ```spl2 fence (like commits.md)
+        const commitsMd = [
+            '---',
+            "extension: 'semantic-prompt-language'",
+            'version: 1',
+            "model: 'gpt-4.1'",
+            '---',
+            '',
+            '```spl2',
+            'pri',
+            '```',
+        ].join('\n');
+        const commitsDoc = TextDocument.create('file:///workspace/commits.md', 'markdown', 1, commitsMd);
+        const commitsAnalysis = analyzeSPL2Document(commitsDoc);
+
+        // `pri` is flagged as an undefined name with "Did you mean: 'print'?"
+        assert.equal(commitsAnalysis.diagnostics.length, 1);
+        assert.equal(commitsAnalysis.diagnostics[0].code, 'undefined-name');
+        assert.match(commitsAnalysis.diagnostics[0].message, /name 'pri' is not defined/);
+        assert.match(commitsAnalysis.diagnostics[0].message, /Did you mean: 'print'\?/);
+        assert.equal(commitsAnalysis.diagnostics[0].range.start.line, 7);
+        assert.equal(commitsAnalysis.diagnostics[0].range.start.character, 0);
+        assert.equal(commitsAnalysis.diagnostics[0].range.end.character, 3);
+
+        // Completions at `pri` include Python built-in `print`, keywords (`def`, `for`, `import`, etc.), and SPL2 keywords
+        const completionsAtPri = getSPL2Completions(commitsAnalysis, { line: 7, character: 3 });
+        const priLabels = completionsAtPri.map((c) => c.label);
+        assert.ok(priLabels.includes('print'));
+        assert.ok(priLabels.includes('len'));
+        assert.ok(priLabels.includes('range'));
+        assert.ok(priLabels.includes('def'));
+        assert.ok(priLabels.includes('for'));
+        assert.ok(priLabels.includes('import'));
+
+        // 2. Import and built-in method completions (`from pydantic import `, `lines.`)
+        const importDoc = makeDoc(['from pydantic import ', 'lines = ["a", "b"]', 'lines.'].join('\n'));
+        const importAnalysis = analyzeSPL2Document(importDoc);
+        const pydanticImports = getSPL2Completions(importAnalysis, { line: 0, character: 21 }).map((c) => c.label);
+        assert.ok(pydanticImports.includes('BaseModel'));
+        assert.ok(pydanticImports.includes('Field'));
+
+        const listMethods = getSPL2Completions(importAnalysis, { line: 2, character: 6 }).map((c) => c.label);
+        assert.ok(listMethods.includes('append'));
+        assert.ok(listMethods.includes('extend'));
+
+        // 3. Python syntax errors: unclosed paren, missing ':', trailing operator, return outside function, bad indent
+        const unclosedParen = analyzeSPL2Document(makeDoc("print('hello'"));
+        assert.equal(unclosedParen.diagnostics.length, 1);
+        assert.match(unclosedParen.diagnostics[0].message, /'\(' was never closed/);
+
+        const unterminatedStr = analyzeSPL2Document(makeDoc("msg = 'hello"));
+        assert.equal(unterminatedStr.diagnostics.length, 1);
+        assert.match(unterminatedStr.diagnostics[0].message, /unterminated string literal/);
+
+        const missingColon = analyzeSPL2Document(makeDoc('if True\n    x = 1'));
+        assert.ok(missingColon.diagnostics.some((d) => /expected ':'/.test(d.message)));
+
+        const trailingOp = analyzeSPL2Document(makeDoc('x = 1 +'));
+        assert.equal(trailingOp.diagnostics.length, 1);
+        assert.match(trailingOp.diagnostics[0].message, /SyntaxError: invalid syntax/);
+
+        const returnOutsideFn = analyzeSPL2Document(makeDoc('return 42'));
+        assert.equal(returnOutsideFn.diagnostics.length, 1);
+        assert.match(returnOutsideFn.diagnostics[0].message, /'return' outside function/);
+
+        const assignLiteral = analyzeSPL2Document(makeDoc('1 = 2'));
+        assert.equal(assignLiteral.diagnostics.length, 1);
+        assert.match(assignLiteral.diagnostics[0].message, /cannot assign to literal/);
+
+        // Hover on Python built-in `print`
+        const printHover = getSPL2Hover(analyzeSPL2Document(makeDoc("print('ok')")), { line: 0, character: 2 });
+        assert.ok(printHover);
+        assert.match((printHover.contents as { value: string }).value, /print\(/);
+    });
+
     it('validates all shipped .spl2 and .md examples with zero diagnostics', () => {
         const examplesDir = path.resolve(process.cwd(), '..', 'lang', 'examples');
-        const files = fs.readdirSync(examplesDir).filter((f) => f.endsWith('.spl2') || f.endsWith('.md'));
-        assert.ok(files.length >= 7);
-        for (const file of files) {
+        const shippedExamples = [
+            'async_workflow.spl2',
+            'code_review.md',
+            'decide_guard.spl2',
+            'hello_ask.spl2',
+            'mock_convesation.spl2',
+            'pydantic_person.md',
+            'pydantic_person.spl2',
+            'repo_agent.spl2',
+        ];
+        for (const file of shippedExamples) {
             const fullPath = path.join(examplesDir, file);
             const langId = file.endsWith('.md') ? 'markdown' : 'spl2';
             const doc = TextDocument.create(`file:///${file}`, langId, 1, fs.readFileSync(fullPath, 'utf8'));

@@ -12,6 +12,15 @@ import {
     SymbolKind,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import {
+    appendPythonTopLevelCompletions,
+    collectPythonSymbols,
+    getImportCompletions,
+    getPythonHoverDoc,
+    resolveDotTargetCompletions,
+    tokenizePythonBlock,
+    validatePythonCode,
+} from './python-support.js';
 
 export const SPL2_KEYWORDS = ['ask', 'agent', 'decide', 'enforce', 'forbid', 'restrict', 'success', 'failure'] as const;
 export const COMMON_MODIFIERS = ['len', 'fmt', 'schema', 'tokens', 'retries', 'thinking', 'files', 'model'] as const;
@@ -893,11 +902,31 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         }
     }
 
+    const sourceLogicalLines = new Map<number, { endLine: number }>();
+    const codeBlocks = blocks?.filter((block) => block.kind === 'spl2') ?? [
+        { line: 1, endLine: sourceLines.length },
+    ];
+    for (const block of codeBlocks) {
+        const { logicalLines } = tokenizePythonBlock(
+            sourceLines,
+            originalLines,
+            lineAnchors,
+            block.line - 1,
+            block.endLine - 1,
+            (diagnostic) => diagnostics.push(diagnostic),
+        );
+        for (const logicalLine of logicalLines) {
+            sourceLogicalLines.set(logicalLine.startLine, logicalLine);
+        }
+    }
+    const appendLines = (text: string) => outLines.push(...text.split('\n'));
+
     // First pass: collect class definitions (including Pydantic models and their fields), functions, and bound variables
     let currentClass: SymbolDef | null = null;
     let currentClassIndent = -1;
 
     for (let i = 0; i < sourceLines.length; i++) {
+        if (!sourceLogicalLines.has(i)) continue;
         const line = sourceLines[i];
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
@@ -1038,25 +1067,33 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         }
     }
 
-    // Second pass: line-by-line token-stream rewrite + lint validation
-    for (let i = 0; i < sourceLines.length; i++) {
+    collectPythonSymbols(
+        sourceLines.map((line, index) => sourceLogicalLines.has(index) ? line : ''),
+        originalLines,
+        symbols,
+        blocks,
+    );
+
+    // Rewrite whole logical lines so call delimiters stay outside multiline strings.
+    for (let i = 0, endLine = 0; i < sourceLines.length; i = endLine + 1) {
+        endLine = sourceLogicalLines.get(i)?.endLine ?? i;
         if (blockquoteLinePy.has(i)) {
             outLines.push(blockquoteLinePy.get(i)!);
             continue;
         }
-        const line = sourceLines[i];
+        const line = sourceLines.slice(i, endLine + 1).join('\n');
         const commentIdx = findCommentStart(line);
         const codePart = commentIdx >= 0 ? line.slice(0, commentIdx) : line;
         const commentPart = commentIdx >= 0 ? line.slice(commentIdx) : '';
         const trimmed = codePart.trim();
 
         if (!trimmed) {
-            outLines.push(line);
+            appendLines(line);
             continue;
         }
 
         // 1. Check block headers: enforce, forbid, restrict
-        const enforceForbidBlock = /^(\s*)(enforce|forbid)\b(.*)$/.exec(codePart);
+        const enforceForbidBlock = /^(\s*)(enforce|forbid)\b(.*)$/s.exec(codePart);
         if (enforceForbidBlock && !/^\s*=(?!=)/.test(enforceForbidBlock[3])) {
             const indent = enforceForbidBlock[1];
             const kw = enforceForbidBlock[2] as 'enforce' | 'forbid';
@@ -1074,7 +1111,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                         code: 'missing-expression',
                     });
                 }
-                outLines.push(line);
+                appendLines(line);
                 continue;
             }
 
@@ -1087,14 +1124,14 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                     source: 'spl2',
                     code: 'missing-expression',
                 });
-                outLines.push(`${indent}with __spl2_${kw}__():${commentPart}`);
+                appendLines(`${indent}with __spl2_${kw}__():${commentPart}`);
                 continue;
             }
 
             const exprStartInLine = codePart.indexOf(exprText, kwCol + kw.length);
             const prefix = `${indent}with __spl2_${kw}__(`;
             const genLine = `${prefix}${exprText}):${commentPart}`;
-            outLines.push(genLine);
+            appendLines(genLine);
             lineAnchors.set(i, [
                 { genCol: 0, origCol: 0 },
                 { genCol: indent.length, origCol: kwCol },
@@ -1103,7 +1140,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
             continue;
         }
 
-        const restrictBlock = /^(\s*)(restrict)\b(.*)$/.exec(codePart);
+        const restrictBlock = /^(\s*)(restrict)\b(.*)$/s.exec(codePart);
         if (restrictBlock && !/^\s*=(?!=)/.test(restrictBlock[3])) {
             const indent = restrictBlock[1];
             const rest = restrictBlock[3];
@@ -1115,7 +1152,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                 validateModifiers('restrict', modText, i, openParenCol, true, kwCol, kwCol + 8, diagnostics);
                 const prefix = `${indent}with __spl2_restrict__(`;
                 const genLine = `${prefix}${modText}):${commentPart}`;
-                outLines.push(genLine);
+                appendLines(genLine);
                 lineAnchors.set(i, [
                     { genCol: 0, origCol: 0 },
                     { genCol: indent.length, origCol: kwCol },
@@ -1130,13 +1167,13 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                     source: 'spl2',
                     code: 'missing-expression',
                 });
-                outLines.push(`${indent}with __spl2_restrict__():${commentPart}`);
+                appendLines(`${indent}with __spl2_restrict__():${commentPart}`);
                 continue;
             }
         }
 
         // 2. Check termination statements: success, failure
-        const termMatch = /^(\s*)(success|failure)\b(?![\s]*[=.,:\[])(.*)$/.exec(codePart);
+        const termMatch = /^(\s*)(success|failure)\b(?![\s]*[=.,:\[])(.*)$/s.exec(codePart);
         if (termMatch) {
             const indent = termMatch[1];
             const kw = termMatch[2];
@@ -1145,7 +1182,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                 const arg = exprRest || (kw === 'success' ? 'None' : "'Failure'");
                 const exprCol = exprRest ? codePart.indexOf(exprRest, indent.length + kw.length) : indent.length + kw.length;
                 const prefix = `${indent}__spl2_${kw}__(`;
-                outLines.push(`${prefix}${arg})${commentPart}`);
+                appendLines(`${prefix}${arg})${commentPart}`);
                 lineAnchors.set(i, [
                     { genCol: 0, origCol: 0 },
                     { genCol: prefix.length, origCol: exprCol },
@@ -1155,7 +1192,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
         }
 
         // 3. Check expression keywords: ask, agent, decide
-        const cmdWithMods = /^(\s*(?:(?:[A-Za-z_]\w*\s*=\s*)?(?:return\s+)?(?:if\s+|elif\s+)?(?:await\s+)?)?)(ask|agent|decide)\s*\(([^)]*)\)\s*(.*)$/.exec(codePart);
+        const cmdWithMods = /^(\s*(?:(?:[A-Za-z_]\w*\s*=\s*)?(?:return\s+)?(?:if\s+|elif\s+)?(?:await\s+)?)?)(ask|agent|decide)\s*\(([^)]*)\)\s*(.*)$/s.exec(codePart);
         if (cmdWithMods) {
             const lead = cmdWithMods[1];
             const kw = cmdWithMods[2] as 'ask' | 'agent' | 'decide';
@@ -1174,7 +1211,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
             const parsedMods = parseModifierList(modText, openParenCol + 1);
             if (!tail && !parsedMods.isEmpty && parsedMods.modifiers.length === 0 && parsedMods.positionalCols.length === 1) {
                 const prefix = `${lead}__spl2_${kw}__(__spl2_prompt__=(`;
-                outLines.push(`${prefix}${modText}))${isIfHeader ? ':' : ''}${commentPart}`);
+                appendLines(`${prefix}${modText}))${isIfHeader ? ':' : ''}${commentPart}`);
                 lineAnchors.set(i, [
                     { genCol: 0, origCol: 0 },
                     { genCol: prefix.length, origCol: openParenCol + 1 },
@@ -1217,7 +1254,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                 : '';
             const prefix = `${lead}__spl2_${kw}__(`;
             const genLine = `${prefix}${modText}${promptArg})${isIfHeader ? ':' : ''}${commentPart}`;
-            outLines.push(genLine);
+            appendLines(genLine);
 
             const anchors: ColumnAnchor[] = [
                 { genCol: 0, origCol: 0 },
@@ -1233,7 +1270,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
             continue;
         }
 
-        const cmdBare = /^(\s*(?:(?:[A-Za-z_]\w*\s*=\s*)?(?:return\s+)?(?:if\s+|elif\s+)?(?:await\s+)?)?)(ask|agent|decide)(?:\s+(.+))?$/.exec(codePart);
+        const cmdBare = /^(\s*(?:(?:[A-Za-z_]\w*\s*=\s*)?(?:return\s+)?(?:if\s+|elif\s+)?(?:await\s+)?)?)(ask|agent|decide)(?:\s+(.+))?$/s.exec(codePart);
         if (cmdBare) {
             const lead = cmdBare[1];
             const kw = cmdBare[2] as 'ask' | 'agent' | 'decide';
@@ -1254,7 +1291,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                         code: 'missing-expression',
                     });
                 }
-                outLines.push(line);
+                appendLines(line);
                 continue;
             }
 
@@ -1269,7 +1306,7 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
                 }
                 const promptOrigCol = codePart.indexOf(tail, kwCol + kw.length);
                 const prefix = `${lead}__spl2_${kw}__(__spl2_prompt__=`;
-                outLines.push(`${prefix}${tail})${isIfHeader ? ':' : ''}${commentPart}`);
+                appendLines(`${prefix}${tail})${isIfHeader ? ':' : ''}${commentPart}`);
                 lineAnchors.set(i, [
                     { genCol: 0, origCol: 0 },
                     { genCol: lead.length, origCol: kwCol },
@@ -1279,8 +1316,19 @@ export function analyzeSPL2Document(document: TextDocument): SPL2Analysis {
             }
         }
 
-        outLines.push(line);
+        appendLines(line);
     }
+
+    validatePythonCode(
+        outLines,
+        originalLines,
+        lineAnchors,
+        symbols,
+        diagnostics,
+        blocks,
+        BUILTIN_TOOLS,
+        SPL2_KEYWORDS,
+    );
 
     const preprocessedPython = outLines.join('\n');
     const virtualPythonWithStubs = `${PYLANCE_TYPING_HEADER}${preprocessedPython}`;
@@ -1310,11 +1358,15 @@ function findCommentStart(line: string): number {
                 i++;
                 continue;
             }
-            if (ch === inQuote) inQuote = null;
+            if (line.startsWith(inQuote, i)) {
+                i += inQuote.length - 1;
+                inQuote = null;
+            }
             continue;
         }
         if (ch === "'" || ch === '"') {
-            inQuote = ch;
+            inQuote = line.startsWith(ch.repeat(3), i) ? ch.repeat(3) : ch;
+            i += inQuote.length - 1;
             continue;
         }
         if (ch === '#') return i;
@@ -1323,11 +1375,17 @@ function findCommentStart(line: string): number {
 }
 
 export function getSPL2Completions(analysis: SPL2Analysis, position: Position): CompletionItem[] {
+    const line = analysis.originalLines[position.line] ?? '';
+    const beforeCursor = line.slice(0, position.character);
+
     if (analysis.isMarkdown) {
         if (!analysis.isWorkflow) return [];
         const block = findBlockAtLine(analysis.blocks, position.line);
         if (!block) return [];
         if (block.kind === 'natural') {
+            if (!/(?:@[A-Za-z_0-9]*|@validate\[[A-Za-z_0-9]*)$/.test(beforeCursor)) {
+                return [];
+            }
             const naturalItems: CompletionItem[] = [];
             for (const sym of analysis.symbols.values()) {
                 naturalItems.push({
@@ -1352,33 +1410,23 @@ export function getSPL2Completions(analysis: SPL2Analysis, position: Position): 
         }
     }
 
-    const line = analysis.originalLines[position.line] ?? '';
-    const beforeCursor = line.slice(0, position.character);
-    const items: CompletionItem[] = [];
-
-    // 1. Check if completing member access `var.` where `var` has an inferred Pydantic schema type
-    const dotMatch = /([A-Za-z_]\w*)\.\s*([A-Za-z_]\w*)?$/.exec(beforeCursor);
-    if (dotMatch) {
-        const objName = dotMatch[1];
-        const objSym = analysis.symbols.get(objName);
-        if (objSym?.inferredType) {
-            const classSym = analysis.symbols.get(objSym.inferredType);
-            if (classSym?.fields) {
-                for (const field of classSym.fields) {
-                    items.push({
-                        label: field.name,
-                        kind: CompletionItemKind.Field,
-                        detail: `${field.name}: ${field.typeAnnotation} (${classSym.name})`,
-                        documentation: {
-                            kind: MarkupKind.Markdown,
-                            value: `Pydantic field on \`${classSym.name}\` (inferred from \`schema=${classSym.name}\`).`,
-                        },
-                    });
-                }
-                return items;
-            }
-        }
+    if (findCommentStart(beforeCursor) >= 0) {
+        return [];
     }
+
+    // 0. Check if completing `import <module>` or `from <module> import <name>`
+    const importItems = getImportCompletions(beforeCursor);
+    if (importItems) {
+        return importItems;
+    }
+
+    // 1. Check if completing member access `expr.` (Pydantic models, chained fields, built-in types, modules)
+    const dotItems = resolveDotTargetCompletions(beforeCursor, analysis);
+    if (dotItems && dotItems.length > 0) {
+        return dotItems;
+    }
+
+    const items: CompletionItem[] = [];
 
     // 2. Check if cursor is inside modifier parentheses of `ask(...)`, `agent(...)`, `decide(...)`, or `restrict(...)`
     const callCtx = /(ask|agent|decide|restrict)\s*\(([^)]*)$/.exec(beforeCursor);
@@ -1406,6 +1454,27 @@ export function getSPL2Completions(analysis: SPL2Analysis, position: Position): 
             }));
         }
 
+        const schemaValMatch = /\bschema\s*=\s*([A-Za-z_0-9]*)$/.exec(insideParens);
+        if (schemaValMatch) {
+            for (const sym of analysis.symbols.values()) {
+                if (sym.kind === SymbolKind.Class) {
+                    items.push({
+                        label: sym.name,
+                        kind: CompletionItemKind.Class,
+                        detail: `Schema class ${sym.name}`,
+                    });
+                }
+            }
+            for (const t of ['str', 'int', 'float', 'bool', 'list', 'dict']) {
+                items.push({
+                    label: t,
+                    kind: CompletionItemKind.Class,
+                    detail: `Python built-in type ${t}`,
+                });
+            }
+            return items;
+        }
+
         const mods: string[] =
             kw === 'restrict'
                 ? [...RESTRICT_MODIFIERS]
@@ -1430,7 +1499,7 @@ export function getSPL2Completions(analysis: SPL2Analysis, position: Position): 
         return items;
     }
 
-    // 3. Top-level SPL2 keywords, built-in tools, and document symbols
+    // 3. Top-level SPL2 keywords, built-in tools, document symbols, and Python syntax/builtins
     for (const kw of SPL2_KEYWORDS) {
         items.push({
             label: kw,
@@ -1463,10 +1532,14 @@ export function getSPL2Completions(analysis: SPL2Analysis, position: Position): 
                     ? CompletionItemKind.Class
                     : sym.kind === SymbolKind.Function
                     ? CompletionItemKind.Function
+                    : sym.kind === SymbolKind.Module
+                    ? CompletionItemKind.Module
                     : CompletionItemKind.Variable,
             detail: sym.inferredType ? `${sym.name}: ${sym.inferredType}` : sym.name,
         });
     }
+
+    appendPythonTopLevelCompletions(items);
 
     return items;
 }
@@ -1528,7 +1601,7 @@ export function getSPL2Hover(analysis: SPL2Analysis, position: Position): Hover 
         };
     }
 
-    return null;
+    return getPythonHoverDoc(word, range);
 }
 
 export function getSPL2Definition(analysis: SPL2Analysis, position: Position): Location | null {

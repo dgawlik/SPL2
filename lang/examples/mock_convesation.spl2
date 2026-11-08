@@ -1,0 +1,49 @@
+
+class Message():
+    def __init__(self, sender, content):
+        self.sender = sender
+        self.content = content
+
+class Conversation():
+    def __init__(self):
+        self.messages = []
+        
+    def say(self, sender, text):
+        message = Message(sender, text)
+        self.messages.append(message)
+
+    def summarize(self):
+        summary = ""
+        for message in self.messages:
+            summary += f"{message.sender}: {message.content}\n"
+        return summary
+
+
+def bob_says(conversation):
+    for i in range(3):
+        result = ask(len='paragraph') f'''Generate next message from Bob. 
+        Whole conversation: {conversation.summarize()}.
+        In case of empty conversation say something random'''
+        yield result
+
+def alice_says(conversation):
+    for i in range(3):
+        result = ask(len='paragraph') f'''Generate next message from Alice. 
+        Whole conversation: {conversation.summarize()}.
+        In case of empty conversation say something random'''
+        yield result
+
+conv = Conversation()
+alice_messages = alice_says(conv)
+bob_messages = bob_says(conv)
+
+while True:
+    alice = next(alice_messages, None)
+    if (alice == None):
+        break 
+    conv.say('Alice', alice)
+
+    bob = next(bob_messages, None)
+    if (bob == None):
+        break 
+    conv.say('Bob', bob)
